@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/argoproj-labs/argocd-operator/common"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -34,6 +35,9 @@ func VerifyAPI(group string, version string) (bool, error) {
 		log.Error(err, "unable to get k8s config")
 		return false, err
 	}
+
+	// Wrap the transport with Suture_ID header support
+	cfg.Wrap(common.WrapTransportWithSutureID)
 
 	k8s, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
@@ -64,6 +68,9 @@ func IsAPIRegistered(group string, version string) (bool, error) {
 		log.Error(err, "unable to get k8s config")
 		return false, err
 	}
+
+	// Wrap the transport with Suture_ID header support
+	cfg.Wrap(common.WrapTransportWithSutureID)
 
 	client, err := aggregator.NewForConfig(cfg)
 	if err != nil {
