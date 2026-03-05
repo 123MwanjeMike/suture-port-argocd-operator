@@ -291,6 +291,36 @@ func policyRuleForNotificationsController() []v1.PolicyRule {
 	}
 }
 
+func policyRuleForNotificationsControllerClusterRole() []v1.PolicyRule {
+	return []v1.PolicyRule{
+		{
+			APIGroups: []string{
+				"argoproj.io",
+			},
+			Resources: []string{
+				"applications",
+			},
+			Verbs: []string{
+				"list",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"",
+			},
+			Resources: []string{
+				"configmaps",
+				"secrets",
+			},
+			Verbs: []string{
+				"list",
+				"watch",
+			},
+		},
+	}
+}
+
 func policyRuleForServerApplicationSourceNamespaces() []v1.PolicyRule {
 	return []v1.PolicyRule{
 		{
@@ -308,20 +338,6 @@ func policyRuleForServerApplicationSourceNamespaces() []v1.PolicyRule {
 				"update",
 				"watch",
 				"delete",
-			},
-		},
-		{
-			APIGroups: []string{
-				"batch",
-			},
-			Resources: []string{
-				"jobs",
-				"cronjobs",
-				"cronjobs/finalizers",
-			},
-			Verbs: []string{
-				"create",
-				"update",
 			},
 		},
 	}
@@ -603,6 +619,168 @@ func policyRuleForServerApplicationSetSourceNamespaces() []v1.PolicyRule {
 				"update",
 				"watch",
 				"delete",
+			},
+		},
+	}
+}
+
+func policyRuleForRoleForImageUpdaterController() []v1.PolicyRule {
+	return []v1.PolicyRule{
+		// ConfigMaps and Secrets
+		{
+			APIGroups: []string{
+				"",
+			},
+			Resources: []string{
+				"configmaps",
+				"secrets",
+			},
+			Verbs: []string{
+				"get",
+				"list",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"",
+			},
+			ResourceNames: []string{
+				ArgocdImageUpdaterConfigCM,
+			},
+			Resources: []string{
+				"configmaps",
+			},
+			Verbs: []string{
+				"get",
+			},
+		},
+		{
+			APIGroups: []string{
+				"",
+			},
+			ResourceNames: []string{
+				ArgocdImageUpdaterSSHConfigCM,
+			},
+			Resources: []string{
+				"configmaps",
+			},
+			Verbs: []string{
+				"get",
+			},
+		},
+		{
+			APIGroups: []string{
+				"",
+			},
+			ResourceNames: []string{
+				ArgocdImageUpdaterSecret,
+			},
+			Resources: []string{
+				"secrets",
+			},
+			Verbs: []string{
+				"get",
+			},
+		},
+
+		// leases
+		{
+			APIGroups: []string{"coordination.k8s.io"},
+			Resources: []string{
+				"leases",
+			},
+			Verbs: []string{
+				"create",
+				"delete",
+				"get",
+				"list",
+				"patch",
+				"update",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{
+				"events",
+			},
+			Verbs: []string{
+				"create",
+				"patch",
+			},
+		},
+	}
+}
+
+func policyRuleForClusterRoleForImageUpdaterController() []v1.PolicyRule {
+	return []v1.PolicyRule{
+		{
+			APIGroups: []string{
+				"",
+			},
+			Resources: []string{
+				"events",
+			},
+			Verbs: []string{
+				"create",
+				"patch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"argocd-image-updater.argoproj.io",
+			},
+			Resources: []string{
+				"imageupdaters",
+			},
+			Verbs: []string{
+				"create",
+				"delete",
+				"get",
+				"list",
+				"patch",
+				"update",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{
+				"argocd-image-updater.argoproj.io",
+			},
+			Resources: []string{
+				"imageupdaters/finalizers",
+			},
+			Verbs: []string{
+				"update",
+			},
+		},
+		{
+			APIGroups: []string{
+				"argocd-image-updater.argoproj.io",
+			},
+			Resources: []string{
+				"imageupdaters/status",
+			},
+			Verbs: []string{
+				"get",
+				"patch",
+				"update",
+			},
+		},
+		{
+			APIGroups: []string{
+				"argoproj.io",
+			},
+			Resources: []string{
+				"applications",
+			},
+			Verbs: []string{
+				"get",
+				"list",
+				"patch",
+				"update",
+				"watch",
 			},
 		},
 	}

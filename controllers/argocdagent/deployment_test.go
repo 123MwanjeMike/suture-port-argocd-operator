@@ -59,10 +59,7 @@ func withPrincipalImage(image string) argoCDOpt {
 		if a.Spec.ArgoCDAgent.Principal == nil {
 			a.Spec.ArgoCDAgent.Principal = &argoproj.PrincipalSpec{}
 		}
-		if a.Spec.ArgoCDAgent.Principal.Server == nil {
-			a.Spec.ArgoCDAgent.Principal.Server = &argoproj.PrincipalServerSpec{}
-		}
-		a.Spec.ArgoCDAgent.Principal.Server.Image = image
+		a.Spec.ArgoCDAgent.Principal.Image = image
 	}
 }
 
@@ -129,7 +126,6 @@ func TestReconcilePrincipalDeployment_DeploymentDoesNotExist_PrincipalEnabled(t 
 	container := deployment.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, generateAgentResourceName(cr.Name, testCompName), container.Name)
 	assert.Equal(t, buildPrincipalImage(cr), container.Image)
-	assert.Equal(t, corev1.PullAlways, container.ImagePullPolicy)
 	assert.Equal(t, buildArgs(testCompName), container.Args)
 	assert.Equal(t, buildPrincipalContainerEnv(cr), container.Env)
 	assert.Equal(t, buildSecurityContext(), container.SecurityContext)
@@ -396,8 +392,9 @@ func TestReconcilePrincipalDeployment_VerifyDeploymentSpec(t *testing.T) {
 		if env.Name == "REDIS_PASSWORD" {
 			assert.NotNil(t, env.ValueFrom, "REDIS_PASSWORD should reference a secret")
 			assert.NotNil(t, env.ValueFrom.SecretKeyRef, "REDIS_PASSWORD should reference a secret key")
-			assert.Equal(t, "argocd-redis", env.ValueFrom.SecretKeyRef.Name)
-			assert.Equal(t, "auth", env.ValueFrom.SecretKeyRef.Key)
+
+			assert.Equal(t, "argocd-redis-initial-password", env.ValueFrom.SecretKeyRef.Name)
+			assert.Equal(t, "admin.password", env.ValueFrom.SecretKeyRef.Key)
 		} else {
 			// All other environment variables should have direct values, not references
 			assert.Nil(t, env.ValueFrom, "Environment variable %s should have direct value, not reference", env.Name)

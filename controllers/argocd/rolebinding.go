@@ -226,6 +226,9 @@ func (r *ReconcileArgoCD) reconcileRoleBinding(name string, rules []v1.PolicyRul
 
 	// reconcile rolebindings only for ArgoCDServerComponent
 	if name == common.ArgoCDServerComponent {
+		if !argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace) {
+			return nil
+		}
 
 		// reconcile rolebindings for all source namespaces for argocd-server
 		sourceNamespaces, err := r.getSourceNamespaces(cr)
@@ -342,7 +345,7 @@ func newRoleBindingWithNameForApplicationSourceNamespaces(namespace string, cr *
 	roleBinding := newRoleBindingForSupportNamespaces(cr, namespace)
 
 	labels := roleBinding.Labels
-	labels[common.ArgoCDKeyName] = roleBinding.Name
+	labels[common.ArgoCDKeyName] = cr.Name
 	roleBinding.Labels = labels
 
 	return roleBinding

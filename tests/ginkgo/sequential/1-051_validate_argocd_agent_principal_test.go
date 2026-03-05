@@ -18,22 +18,14 @@ package sequential
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
-	"math/big"
-	"net"
-	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -43,38 +35,45 @@ import (
 	"github.com/argoproj-labs/argocd-operator/common"
 	"github.com/argoproj-labs/argocd-operator/controllers/argocdagent"
 	"github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture"
+	agentFixture "github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/agent"
 	argocdFixture "github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/argocd"
 	deploymentFixture "github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/deployment"
 	k8sFixture "github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/k8s"
-	osFixture "github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/os"
 	fixtureUtils "github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/utils"
 )
 
 var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 
 	const (
-		argoCDName               = "example"
-		argoCDAgentPrincipalName = "example-agent-principal" // argoCDName + "-agent-principal"
+		argoCDName                    = "example"
+		argoCDAgentPrincipalName      = "example-agent-principal" // argoCDName + "-agent-principal"
+		principalMetricsServiceFmt    = "%s-agent-principal-metrics"
+		principalRedisProxyServiceFmt = "%s-agent-principal-redisproxy"
+		principalHealthzServiceFmt    = "%s-agent-principal-healthz"
 	)
 
 	Context("1-051_validate_argocd_agent_principal", func() {
 
 		var (
-			k8sClient            client.Client
-			ctx                  context.Context
-			argoCD               *argov1beta1api.ArgoCD
-			ns                   *corev1.Namespace
-			cleanupFunc          func()
-			serviceAccount       *corev1.ServiceAccount
-			role                 *rbacv1.Role
-			roleBinding          *rbacv1.RoleBinding
-			clusterRole          *rbacv1.ClusterRole
-			clusterRoleBinding   *rbacv1.ClusterRoleBinding
-			serviceNames         []string
-			deploymentNames      []string
-			principalDeployment  *appsv1.Deployment
-			expectedEnvVariables map[string]string
-			secretNames          []string
+			k8sClient                client.Client
+			ctx                      context.Context
+			argoCD                   *argov1beta1api.ArgoCD
+			ns                       *corev1.Namespace
+			cleanupFunc              func()
+			serviceAccount           *corev1.ServiceAccount
+			role                     *rbacv1.Role
+			roleBinding              *rbacv1.RoleBinding
+			clusterRole              *rbacv1.ClusterRole
+			clusterRoleBinding       *rbacv1.ClusterRoleBinding
+			serviceNames             []string
+			deploymentNames          []string
+			principalDeployment      *appsv1.Deployment
+			expectedEnvVariables     map[string]string
+			secretNames              agentFixture.AgentSecretNames
+			principalRoute           *routev1.Route
+			principalNetworkPolicy   *networkingv1.NetworkPolicy
+			resourceProxyServiceName string
+			principalResources       agentFixture.PrincipalResources
 		)
 
 		BeforeEach(func() {
@@ -95,11 +94,9 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 					},
 					ArgoCDAgent: &argov1beta1api.ArgoCDAgentSpec{
 						Principal: &argov1beta1api.PrincipalSpec{
-							Enabled: ptr.To(true),
-							Server: &argov1beta1api.PrincipalServerSpec{
-								Auth:     "mtls:CN=([^,]+)",
-								LogLevel: "info",
-							},
+							Enabled:  ptr.To(true),
+							Auth:     "mtls:CN=([^,]+)",
+							LogLevel: "info",
 							Namespace: &argov1beta1api.PrincipalNamespaceSpec{
 								AllowedNamespaces: []string{
 									"*",
@@ -110,6 +107,9 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 							},
 							JWT: &argov1beta1api.PrincipalJWTSpec{
 								InsecureGenerate: ptr.To(true),
+							},
+							Server: &argov1beta1api.PrincipalServerSpec{
+								KeepAliveMinInterval: "30s",
 							},
 						},
 					},
@@ -155,19 +155,44 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 			}
 
 			// List required secrets for principal pod
-			secretNames = []string{
-				"argocd-agent-jwt",
-				"argocd-agent-principal-tls",
-				"argocd-agent-ca",
-				"argocd-agent-resource-proxy-tls",
+			secretNames = agentFixture.AgentSecretNames{
+				JWTSecretName:                  agentJWTSecretName,
+				PrincipalTLSSecretName:         agentPrincipalTLSSecretName,
+				RootCASecretName:               agentRootCASecretName,
+				ResourceProxyTLSSecretName:     agentResourceProxyTLSSecretName,
+				RedisInitialPasswordSecretName: "example-redis-initial-password",
 			}
 
-			serviceNames = []string{argoCDAgentPrincipalName, fmt.Sprintf("%s-agent-principal-metrics", argoCDName), fmt.Sprintf("%s-redis", argoCDName), fmt.Sprintf("%s-repo-server", argoCDName), fmt.Sprintf("%s-server", argoCDName), fmt.Sprintf("%s-agent-principal-resource-proxy", argoCDName), fmt.Sprintf("%s-agent-principal-healthz", argoCDName)}
+			resourceProxyServiceName = fmt.Sprintf("%s-agent-principal-resource-proxy", argoCDName)
+			serviceNames = []string{
+				argoCDAgentPrincipalName,
+				fmt.Sprintf(principalMetricsServiceFmt, argoCDName),
+				fmt.Sprintf("%s-redis", argoCDName),
+				fmt.Sprintf("%s-repo-server", argoCDName),
+				fmt.Sprintf("%s-server", argoCDName),
+				fmt.Sprintf(principalRedisProxyServiceFmt, argoCDName),
+				resourceProxyServiceName,
+				fmt.Sprintf(principalHealthzServiceFmt, argoCDName),
+			}
 			deploymentNames = []string{fmt.Sprintf("%s-redis", argoCDName), fmt.Sprintf("%s-repo-server", argoCDName), fmt.Sprintf("%s-server", argoCDName)}
 
 			principalDeployment = &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      argoCDAgentPrincipalName,
+					Namespace: ns.Name,
+				},
+			}
+
+			principalRoute = &routev1.Route{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-agent-principal", argoCDName),
+					Namespace: ns.Name,
+				},
+			}
+
+			principalNetworkPolicy = &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-agent-principal-network-policy", argoCDName),
 					Namespace: ns.Name,
 				},
 			}
@@ -189,226 +214,92 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 				argocdagent.EnvArgoCDPrincipalRedisCompressionType:      "gzip",
 				argocdagent.EnvArgoCDPrincipalLogFormat:                 "text",
 				argocdagent.EnvArgoCDPrincipalEnableWebSocket:           "false",
-				argocdagent.EnvArgoCDPrincipalTLSSecretName:             "argocd-agent-principal-tls",
-				argocdagent.EnvArgoCDPrincipalTLSServerRootCASecretName: "argocd-agent-ca",
-				argocdagent.EnvArgoCDPrincipalResourceProxySecretName:   "argocd-agent-resource-proxy-tls",
-				argocdagent.EnvArgoCDPrincipalResourceProxyCaSecretName: "argocd-agent-ca",
-				argocdagent.EnvArgoCDPrincipalJwtSecretName:             "argocd-agent-jwt",
+				argocdagent.EnvArgoCDPrincipalTLSSecretName:             agentPrincipalTLSSecretName,
+				argocdagent.EnvArgoCDPrincipalTLSServerRootCASecretName: agentRootCASecretName,
+				argocdagent.EnvArgoCDPrincipalResourceProxySecretName:   agentResourceProxyTLSSecretName,
+				argocdagent.EnvArgoCDPrincipalResourceProxyCaSecretName: agentRootCASecretName,
+				argocdagent.EnvArgoCDPrincipalJwtSecretName:             agentJWTSecretName,
+			}
+
+			principalResources = agentFixture.PrincipalResources{
+				PrincipalNamespaceName:   ns.Name,
+				ArgoCDAgentPrincipalName: argoCDAgentPrincipalName,
+				ArgoCDName:               argoCDName,
+				ServiceAccount:           serviceAccount,
+				Role:                     role,
+				RoleBinding:              roleBinding,
+				ClusterRole:              clusterRole,
+				ClusterRoleBinding:       clusterRoleBinding,
+				PrincipalDeployment:      principalDeployment,
+				PrincipalRoute:           principalRoute,
+				PrincipalNetworkPolicy:   principalNetworkPolicy,
+				ServicesToDelete: []string{
+					argoCDAgentPrincipalName,
+					fmt.Sprintf(principalMetricsServiceFmt, argoCDName),
+					fmt.Sprintf(principalRedisProxyServiceFmt, argoCDName),
+					resourceProxyServiceName,
+					fmt.Sprintf(principalHealthzServiceFmt, argoCDName),
+				},
 			}
 		})
 
 		AfterEach(func() {
+			By("Cleanup cluster-scoped resources")
+			_ = k8sClient.Delete(ctx, clusterRole)
+			_ = k8sClient.Delete(ctx, clusterRoleBinding)
+
 			By("Cleanup namespace")
 			if cleanupFunc != nil {
 				cleanupFunc()
 			}
 		})
 
-		// generateTLSCertificateAndJWTKey creates a self-signed certificate and JWT signing key for testing
-		generateTLSCertificateAndJWTKey := func() ([]byte, []byte, []byte, error) {
-			// Generate private key for TLS certificate
-			privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-			if err != nil {
-				GinkgoWriter.Println("Error generating private key: ", err)
-				return nil, nil, nil, err
-			}
-
-			// Create certificate template
-			template := x509.Certificate{
-				SerialNumber: big.NewInt(1),
-				Subject: pkix.Name{
-					CommonName: "test",
-				},
-				NotBefore:   time.Now(),
-				NotAfter:    time.Now().Add(10 * time.Minute),
-				KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-				ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-				IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
-			}
-
-			// Create certificate
-			certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
-			if err != nil {
-				GinkgoWriter.Println("Error creating certificate: ", err)
-				return nil, nil, nil, err
-			}
-
-			// Encode certificate to PEM
-			certPEM := pem.EncodeToMemory(&pem.Block{
-				Type:  "CERTIFICATE",
-				Bytes: certDER,
+		createRequiredSecrets := func(namespace *corev1.Namespace, additionalPrincipalSANs ...string) {
+			agentFixture.CreateRequiredSecrets(agentFixture.PrincipalSecretsConfig{
+				PrincipalNamespaceName:     namespace.Name,
+				PrincipalServiceName:       argoCDAgentPrincipalName,
+				ResourceProxyServiceName:   resourceProxyServiceName,
+				JWTSecretName:              secretNames.JWTSecretName,
+				PrincipalTLSSecretName:     secretNames.PrincipalTLSSecretName,
+				RootCASecretName:           secretNames.RootCASecretName,
+				ResourceProxyTLSSecretName: secretNames.ResourceProxyTLSSecretName,
+				AdditionalPrincipalSANs:    additionalPrincipalSANs,
 			})
-
-			// Encode private key to PEM
-			privateKeyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
-			if err != nil {
-				GinkgoWriter.Println("Error marshalling private key: ", err)
-				return nil, nil, nil, err
-			}
-
-			keyPEM := pem.EncodeToMemory(&pem.Block{
-				Type:  "PRIVATE KEY",
-				Bytes: privateKeyDER,
-			})
-
-			// Generate separate RSA private key for JWT signing
-			jwtPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-			if err != nil {
-				GinkgoWriter.Println("Error generating JWT signing key: ", err)
-				return nil, nil, nil, err
-			}
-
-			// Encode JWT private key to PEM format
-			jwtPrivateKeyDER, err := x509.MarshalPKCS8PrivateKey(jwtPrivateKey)
-			if err != nil {
-				GinkgoWriter.Println("Error marshalling JWT signing key: ", err)
-				return nil, nil, nil, err
-			}
-
-			jwtKeyPEM := pem.EncodeToMemory(&pem.Block{
-				Type:  "PRIVATE KEY",
-				Bytes: jwtPrivateKeyDER,
-			})
-
-			return certPEM, keyPEM, jwtKeyPEM, nil
 		}
 
-		// createRequiredSecrets creates all the secrets needed for the principal pod to start properly
-		createRequiredSecrets := func(ns *corev1.Namespace) {
-
-			By("creating required secrets for principal pod")
-
-			// Generate TLS certificate and JWT signing key
-			certPEM, keyPEM, jwtKeyPEM, err := generateTLSCertificateAndJWTKey()
-			Expect(err).ToNot(HaveOccurred())
-
-			// Create argocd-agent-jwt secret
-			jwtSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      secretNames[0],
-					Namespace: ns.Name,
-				},
-				Data: map[string][]byte{
-					"jwt.key": jwtKeyPEM,
-				},
-			}
-			Expect(k8sClient.Create(ctx, jwtSecret)).To(Succeed())
-
-			// Create TLS secrets
-			for i := 1; i <= 3; i++ {
-				tlsSecret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      secretNames[i],
-						Namespace: ns.Name,
-					},
-					Type: corev1.SecretTypeTLS,
-					Data: map[string][]byte{
-						"tls.crt": certPEM,
-						"tls.key": keyPEM,
-					},
-				}
-				Expect(k8sClient.Create(ctx, tlsSecret)).To(Succeed())
+		verifyExpectedResourcesExist := func(namespace *corev1.Namespace, expectRoute ...bool) {
+			var expectRoutePtr *bool
+			if len(expectRoute) > 0 {
+				expectRoutePtr = ptr.To(expectRoute[0])
 			}
 
-			// Create argocd-redis secret
-			redisSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "argocd-redis",
-					Namespace: ns.Name,
-				},
-				Data: map[string][]byte{
-					"auth": []byte(uuid.New().String()),
-				},
-			}
-			Expect(k8sClient.Create(ctx, redisSecret)).To(Succeed())
+			agentFixture.VerifyExpectedResourcesExist(agentFixture.VerifyExpectedResourcesExistParams{
+				Namespace:                namespace,
+				ArgoCDAgentPrincipalName: argoCDAgentPrincipalName,
+				ArgoCDName:               argoCDName,
+				ServiceAccount:           serviceAccount,
+				Role:                     role,
+				RoleBinding:              roleBinding,
+				ClusterRole:              clusterRole,
+				ClusterRoleBinding:       clusterRoleBinding,
+				PrincipalDeployment:      principalDeployment,
+				PrincipalRoute:           principalRoute,
+				SecretNames:              secretNames,
+				ServiceNames:             serviceNames,
+				PrincipalNetworkPolicy:   principalNetworkPolicy,
+				DeploymentNames:          deploymentNames,
+				ExpectRoute:              expectRoutePtr,
+			})
 		}
 
-		// verifyExpectedResourcesExist will verify that the resources that are created for principal and ArgoCD are created.
-		verifyExpectedResourcesExist := func(ns *corev1.Namespace) {
-
-			By("verifying expected resources exist")
-
-			Eventually(serviceAccount).Should(k8sFixture.ExistByName())
-			Eventually(role).Should(k8sFixture.ExistByName())
-			Eventually(roleBinding).Should(k8sFixture.ExistByName())
-			Eventually(clusterRole).Should(k8sFixture.ExistByName())
-			defer func() {
-				_ = k8sClient.Delete(ctx, clusterRole)
-			}()
-
-			Eventually(clusterRoleBinding).Should(k8sFixture.ExistByName())
-			defer func() {
-				_ = k8sClient.Delete(ctx, clusterRoleBinding)
-			}()
-
-			for _, serviceName := range serviceNames {
-
-				By("verifying Service '" + serviceName + "' exists and is a LoadBalancer or ClusterIP depending on which service")
-
-				service := &corev1.Service{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      serviceName,
-						Namespace: ns.Name,
-					},
-				}
-				Eventually(service).Should(k8sFixture.ExistByName())
-
-				if serviceName == argoCDAgentPrincipalName {
-					Expect(string(service.Spec.Type)).To(Equal("LoadBalancer"))
-				} else {
-					Expect(string(service.Spec.Type)).To(Equal("ClusterIP"))
-				}
-			}
-
-			for _, deploymentName := range deploymentNames {
-
-				By("verifying Deployment '" + deploymentName + "' exists and is ready")
-
-				depl := &appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      deploymentName,
-						Namespace: ns.Name,
-					},
-				}
-				Eventually(depl).Should(k8sFixture.ExistByName())
-			}
-
-			By("verifying primary principal Deployment has expected values")
-
-			Eventually(principalDeployment).Should(k8sFixture.ExistByName())
-			Eventually(principalDeployment).Should(k8sFixture.HaveLabelWithValue("app.kubernetes.io/component", "principal"))
-			Eventually(principalDeployment).Should(k8sFixture.HaveLabelWithValue("app.kubernetes.io/managed-by", argoCDName))
-			Eventually(principalDeployment).Should(k8sFixture.HaveLabelWithValue("app.kubernetes.io/name", argoCDAgentPrincipalName))
-			Eventually(principalDeployment).Should(k8sFixture.HaveLabelWithValue("app.kubernetes.io/part-of", "argocd-agent"))
-		}
-
-		// verifyResourcesDeleted will verify that the various resources that are created for principal are deleted.
 		verifyResourcesDeleted := func() {
-
-			By("verifying resources are deleted for principal pod")
-
-			Eventually(serviceAccount).Should(k8sFixture.NotExistByName())
-			Eventually(role).Should(k8sFixture.NotExistByName())
-			Eventually(roleBinding).Should(k8sFixture.NotExistByName())
-			Eventually(clusterRole).Should(k8sFixture.NotExistByName())
-			Eventually(clusterRoleBinding).Should(k8sFixture.NotExistByName())
-			Eventually(principalDeployment).Should(k8sFixture.NotExistByName())
-
-			for _, serviceName := range []string{argoCDAgentPrincipalName, fmt.Sprintf("%s-agent-principal-metrics", argoCDName)} {
-				service := &corev1.Service{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      serviceName,
-						Namespace: ns.Name,
-					},
-				}
-				Eventually(service).Should(k8sFixture.NotExistByName())
-			}
+			agentFixture.VerifyResourcesDeleted(principalResources)
 		}
 
 		It("should create argocd agent principal resources, but pod should fail to start as image does not exist", func() {
 			// Change log level to trace and custom image name
-			argoCD.Spec.ArgoCDAgent.Principal.Server.LogLevel = "trace"
-			argoCD.Spec.ArgoCDAgent.Principal.Server.Image = "quay.io/user/argocd-agent:v1"
+			argoCD.Spec.ArgoCDAgent.Principal.LogLevel = "trace"
+			argoCD.Spec.ArgoCDAgent.Principal.Image = "quay.io/user/argocd-agent:v1"
 
 			By("Create ArgoCD instance")
 
@@ -449,7 +340,7 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 		It("should create argocd agent principal resources, and pod should start successfully with default image", func() {
 
 			// Add a custom environment variable to the principal server
-			argoCD.Spec.ArgoCDAgent.Principal.Server.Env = []corev1.EnvVar{{Name: "TEST_ENV", Value: "test_value"}}
+			argoCD.Spec.ArgoCDAgent.Principal.Env = []corev1.EnvVar{{Name: "TEST_ENV", Value: "test_value"}}
 
 			By("Create ArgoCD instance")
 
@@ -463,7 +354,7 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 
 			container := deploymentFixture.GetTemplateSpecContainerByName(argoCDAgentPrincipalName, *principalDeployment)
 			Expect(container).ToNot(BeNil())
-			Expect(container.Image).To(Equal("quay.io/argoprojlabs/argocd-agent:v0.3.2"))
+			Expect(container.Image).To(Equal(common.ArgoCDAgentPrincipalDefaultImageName))
 
 			By("Create required secrets and certificates for principal pod to start properly")
 
@@ -471,43 +362,19 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 
 			By("Verify principal pod starts successfully by checking logs")
 
-			Eventually(func() bool {
-				logOutput, err := osFixture.ExecCommandWithOutputParam(false, "kubectl", "logs",
-					"deployment/"+argoCDAgentPrincipalName, "-n", ns.Name, "--tail=200")
-				if err != nil {
-					GinkgoWriter.Println("Error getting logs: ", err)
-					return false
-				}
-
-				expectedMessages := []string{
-					"Starting metrics server",
-					"Redis proxy started",
-					"Application informer synced and ready",
-					"AppProject informer synced and ready",
-					"Resource proxy started",
-					"Namespace informer synced and ready",
-					"Starting healthz server",
-				}
-
-				for _, message := range expectedMessages {
-					if !strings.Contains(logOutput, message) {
-						GinkgoWriter.Println("Expected message: '", message, "' not found in logs")
-						return false
-					}
-				}
-				return true
-			}, "180s", "5s").Should(BeTrue(), "Pod should start successfully")
+			agentFixture.VerifyLogs(argoCDAgentPrincipalName, ns.Name, []string{
+				"Starting metrics server",
+				"Redis proxy started",
+				"Application informer synced and ready",
+				"AppProject informer synced and ready",
+				"Resource proxy started",
+				"Namespace informer synced and ready",
+				"Starting healthz server",
+			})
 
 			By("verify that deployment is in Ready state")
 
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, client.ObjectKey{Name: argoCDAgentPrincipalName, Namespace: ns.Name}, principalDeployment)
-				if err != nil {
-					GinkgoWriter.Println("Error getting deployment: ", err)
-					return false
-				}
-				return principalDeployment.Status.ReadyReplicas == 1
-			}, "120s", "5s").Should(BeTrue(), "Principal deployment should become ready")
+			Eventually(principalDeployment, "120s", "5s").Should(deploymentFixture.HaveReadyReplicas(1), "Principal deployment should become ready")
 
 			By("Verify environment variables are set correctly")
 
@@ -537,6 +404,7 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 
 			By("Create ArgoCD instance")
 
+			argoCD.Spec.ArgoCDAgent.Principal.Image = common.ArgoCDAgentPrincipalDefaultImageName
 			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
 
 			By("Verify expected resources are created for principal pod")
@@ -547,7 +415,7 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 
 			container := deploymentFixture.GetTemplateSpecContainerByName(argoCDAgentPrincipalName, *principalDeployment)
 			Expect(container).ToNot(BeNil())
-			Expect(container.Image).To(Equal("quay.io/argoprojlabs/argocd-agent:v0.3.2"))
+			Expect(container.Image).To(Equal(common.ArgoCDAgentPrincipalDefaultImageName))
 
 			By("Verify environment variables are set correctly")
 
@@ -562,11 +430,11 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 
 			argocdFixture.Update(argoCD, func(ac *argov1beta1api.ArgoCD) {
 
-				ac.Spec.ArgoCDAgent.Principal.Server.LogLevel = "trace"
-				ac.Spec.ArgoCDAgent.Principal.Server.LogFormat = "json"
+				ac.Spec.ArgoCDAgent.Principal.LogLevel = "trace"
+				ac.Spec.ArgoCDAgent.Principal.LogFormat = "json"
 				ac.Spec.ArgoCDAgent.Principal.Server.KeepAliveMinInterval = "60s"
 				ac.Spec.ArgoCDAgent.Principal.Server.EnableWebSocket = ptr.To(true)
-				ac.Spec.ArgoCDAgent.Principal.Server.Image = "quay.io/argoprojlabs/argocd-agent:v0.4.0"
+				ac.Spec.ArgoCDAgent.Principal.Image = "quay.io/argoprojlabs/argocd-agent:v0.5.1"
 
 				ac.Spec.ArgoCDAgent.Principal.Namespace.AllowedNamespaces = []string{"agent-managed", "agent-autonomous"}
 				ac.Spec.ArgoCDAgent.Principal.Namespace.EnableNamespaceCreate = ptr.To(true)
@@ -590,7 +458,12 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 			By("Create required secrets and certificates for principal pod to start properly")
 
 			// Update secret names according to ArgoCD CR
-			secretNames = []string{"argocd-agent-jwt-v2", "argocd-agent-principal-tls-v2", "argocd-agent-ca-v2", "argocd-agent-resource-proxy-tls-v2"}
+			secretNames = agentFixture.AgentSecretNames{
+				JWTSecretName:              "argocd-agent-jwt-v2",
+				PrincipalTLSSecretName:     "argocd-agent-principal-tls-v2",
+				RootCASecretName:           "argocd-agent-ca-v2",
+				ResourceProxyTLSSecretName: "argocd-agent-resource-proxy-tls-v2",
+			}
 			createRequiredSecrets(ns)
 
 			By("Verify principal has the updated image we specified in ArgoCD CR")
@@ -608,19 +481,12 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 					if container == nil {
 						return false
 					}
-					return container.Image == "quay.io/argoprojlabs/argocd-agent:v0.4.0"
+					return container.Image == "quay.io/argoprojlabs/argocd-agent:v0.5.1"
 				}, "120s", "5s").Should(BeTrue(), "Principal deployment should have the updated image")
 
 			By("verify that deployment is in Ready state")
 
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, client.ObjectKey{Name: argoCDAgentPrincipalName, Namespace: ns.Name}, principalDeployment)
-				if err != nil {
-					GinkgoWriter.Println("Error getting deployment: ", err)
-					return false
-				}
-				return principalDeployment.Status.ReadyReplicas == 1
-			}, "120s", "5s").Should(BeTrue(), "Principal deployment should become ready")
+			Eventually(principalDeployment, "120s", "5s").Should(deploymentFixture.HaveReadyReplicas(1), "Principal deployment should become ready")
 
 			By("Verify environment variables are updated correctly")
 
@@ -643,6 +509,402 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 			for key, value := range expectedEnvVariables {
 				Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: key, Value: value}), "Environment variable %s should be set to %s", key, value)
 			}
+		})
+
+		It("should handle route disabled configuration correctly", func() {
+
+			By("Create ArgoCD instance with route disabled")
+
+			argoCD.Spec.ArgoCDAgent.Principal.Server.Route = argov1beta1api.ArgoCDAgentPrincipalRouteSpec{
+				Enabled: ptr.To(false),
+			}
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify expected resources are created for principal pod")
+
+			verifyExpectedResourcesExist(ns, false)
+
+			By("Verify Route for principal does not exist")
+
+			if fixture.RunningOnOpenShift() {
+				Consistently(principalRoute, "10s", "1s").Should(k8sFixture.NotExistByName())
+			}
+		})
+
+		It("should handle route enabled configuration correctly", func() {
+
+			By("Create ArgoCD instance with route enabled")
+
+			argoCD.Spec.ArgoCDAgent.Principal.Server.Route = argov1beta1api.ArgoCDAgentPrincipalRouteSpec{
+				Enabled: ptr.To(true),
+			}
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify expected resources are created for principal pod")
+
+			verifyExpectedResourcesExist(ns)
+
+			By("Verify Route for principal exists")
+
+			if fixture.RunningOnOpenShift() {
+				Eventually(principalRoute).Should(k8sFixture.ExistByName())
+			}
+		})
+
+		It("should handle route toggle from enabled to disabled correctly", func() {
+
+			By("Create ArgoCD instance with route enabled")
+
+			argoCD.Spec.ArgoCDAgent.Principal.Server.Route = argov1beta1api.ArgoCDAgentPrincipalRouteSpec{
+				Enabled: ptr.To(true),
+			}
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify expected resources are created for principal pod")
+
+			verifyExpectedResourcesExist(ns)
+
+			By("Verify Route for principal exists")
+
+			if fixture.RunningOnOpenShift() {
+				Eventually(principalRoute).Should(k8sFixture.ExistByName())
+			}
+
+			By("Disable route while keeping principal enabled")
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: argoCDName, Namespace: ns.Name}, argoCD)).To(Succeed())
+			argocdFixture.Update(argoCD, func(ac *argov1beta1api.ArgoCD) {
+				ac.Spec.ArgoCDAgent.Principal.Server.Route.Enabled = ptr.To(false)
+			})
+
+			By("Verify Route for principal is deleted")
+
+			if fixture.RunningOnOpenShift() {
+				Eventually(principalRoute).Should(k8sFixture.NotExistByName())
+			}
+
+			By("Verify other principal resources still exist")
+
+			Eventually(principalDeployment).Should(k8sFixture.ExistByName())
+
+			for _, serviceName := range []string{
+				fmt.Sprintf("%s-agent-principal", argoCDName),
+				fmt.Sprintf(principalMetricsServiceFmt, argoCDName),
+				fmt.Sprintf(principalRedisProxyServiceFmt, argoCDName),
+				fmt.Sprintf("%s-agent-principal-resource-proxy", argoCDName),
+				fmt.Sprintf(principalHealthzServiceFmt, argoCDName),
+			} {
+				service := &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      serviceName,
+						Namespace: ns.Name,
+					},
+				}
+				Eventually(service, "30s", "2s").Should(k8sFixture.ExistByName(), "Service '%s' should exist in namespace '%s'", serviceName, ns.Name)
+			}
+
+			By("Re-enable route")
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: argoCDName, Namespace: ns.Name}, argoCD)).To(Succeed())
+			argocdFixture.Update(argoCD, func(ac *argov1beta1api.ArgoCD) {
+				ac.Spec.ArgoCDAgent.Principal.Server.Route.Enabled = ptr.To(true)
+			})
+
+			By("Verify Route for principal is recreated")
+
+			if fixture.RunningOnOpenShift() {
+				Eventually(principalRoute).Should(k8sFixture.ExistByName())
+			}
+		})
+
+		It("should handle service type ClusterIP configuration correctly", func() {
+
+			By("Create ArgoCD instance with service type ClusterIP")
+
+			argoCD.Spec.ArgoCDAgent.Principal.Server.Service = argov1beta1api.ArgoCDAgentPrincipalServiceSpec{
+				Type: corev1.ServiceTypeClusterIP,
+			}
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify expected resources are created for principal pod")
+
+			verifyExpectedResourcesExist(ns)
+
+			By("Verify principal service has ClusterIP type")
+
+			principalService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      argoCDAgentPrincipalName,
+					Namespace: ns.Name,
+				},
+			}
+			Eventually(principalService).Should(k8sFixture.ExistByName())
+			Expect(principalService.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+		})
+
+		It("should handle service type LoadBalancer configuration correctly", func() {
+
+			By("Create ArgoCD instance with service type LoadBalancer")
+
+			argoCD.Spec.ArgoCDAgent.Principal.Server.Service = argov1beta1api.ArgoCDAgentPrincipalServiceSpec{
+				Type: corev1.ServiceTypeLoadBalancer,
+			}
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify expected resources are created for principal pod")
+
+			verifyExpectedResourcesExist(ns)
+
+			By("Verify principal service has LoadBalancer type")
+
+			principalService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      argoCDAgentPrincipalName,
+					Namespace: ns.Name,
+				},
+			}
+			Eventually(principalService).Should(k8sFixture.ExistByName())
+			Expect(principalService.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+		})
+
+		It("should handle service type updates correctly", func() {
+
+			By("Create ArgoCD instance with service type ClusterIP")
+
+			argoCD.Spec.ArgoCDAgent.Principal.Server.Service = argov1beta1api.ArgoCDAgentPrincipalServiceSpec{
+				Type: corev1.ServiceTypeClusterIP,
+			}
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify expected resources are created for principal pod")
+
+			verifyExpectedResourcesExist(ns)
+
+			By("Verify principal service has ClusterIP type initially")
+
+			principalService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      argoCDAgentPrincipalName,
+					Namespace: ns.Name,
+				},
+			}
+			Eventually(principalService).Should(k8sFixture.ExistByName())
+			Expect(principalService.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+
+			By("Update service type to LoadBalancer")
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: argoCDName, Namespace: ns.Name}, argoCD)).To(Succeed())
+			argocdFixture.Update(argoCD, func(ac *argov1beta1api.ArgoCD) {
+				ac.Spec.ArgoCDAgent.Principal.Server.Service.Type = corev1.ServiceTypeLoadBalancer
+			})
+
+			By("Verify principal service type is updated to LoadBalancer")
+
+			Eventually(func() corev1.ServiceType {
+				err := k8sClient.Get(ctx, client.ObjectKey{Name: argoCDAgentPrincipalName, Namespace: ns.Name}, principalService)
+				if err != nil {
+					return ""
+				}
+				return principalService.Spec.Type
+			}, "30s", "2s").Should(Equal(corev1.ServiceTypeLoadBalancer))
+		})
+
+		It("should deploy principal via namespace-scoped ArgoCD instance and verify cluster role and cluster role binding are not created", func() {
+
+			By("Create namespace-scoped ArgoCD instance")
+
+			// Create namespace for hosting namespace-scoped ArgoCD instance with principal
+			nsScoped, cleanupFuncScoped := fixture.CreateNamespaceWithCleanupFunc("argocd-agent-principal-ns-scoped-1-051")
+			defer cleanupFuncScoped()
+
+			// Update namespace in ArgoCD CR
+			argoCD.Namespace = nsScoped.Name
+
+			// Update namespace in resource references
+			serviceAccount.Namespace = nsScoped.Name
+			role.Namespace = nsScoped.Name
+			roleBinding.Namespace = nsScoped.Name
+			principalDeployment.Namespace = nsScoped.Name
+			principalRoute.Namespace = nsScoped.Name
+			clusterRole.Name = fmt.Sprintf("%s-%s-agent-principal", argoCDName, nsScoped.Name)
+			clusterRoleBinding.Name = fmt.Sprintf("%s-%s-agent-principal", argoCDName, nsScoped.Name)
+
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify namespace-scoped resources are created for principal")
+
+			Eventually(serviceAccount, "30s", "2s").Should(k8sFixture.ExistByName())
+			Eventually(role, "30s", "2s").Should(k8sFixture.ExistByName())
+			Eventually(roleBinding, "30s", "2s").Should(k8sFixture.ExistByName())
+			Eventually(principalDeployment, "30s", "2s").Should(k8sFixture.ExistByName())
+			for _, serviceName := range serviceNames {
+				service := &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      serviceName,
+						Namespace: nsScoped.Name,
+					},
+				}
+				Eventually(service, "30s", "2s").Should(k8sFixture.ExistByName(),
+					"Service '%s' should exist in namespace '%s'", serviceName, nsScoped.Name)
+			}
+
+			By("Verify ClusterRole and ClusterRoleBinding are not created")
+			Consistently(clusterRole, "10s", "1s").Should(k8sFixture.NotExistByName(),
+				"ClusterRole '%s' should not exist for namespace-scoped ArgoCD instance", clusterRole.Name)
+
+			Consistently(clusterRoleBinding, "10s", "1s").Should(k8sFixture.NotExistByName(),
+				"ClusterRoleBinding '%s' should not exist for namespace-scoped ArgoCD instance", clusterRoleBinding.Name)
+
+			By("Delete ArgoCD instance")
+			Expect(k8sClient.Delete(ctx, argoCD)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, client.ObjectKey{Name: argoCD.Name, Namespace: argoCD.Namespace}, argoCD)
+				return err != nil
+			}, "60s", "2s").Should(BeTrue(), "ArgoCD should be deleted")
+		})
+
+		It("should delete existing cluster role and cluster role binding if ArgoCD instance is namespace-scoped", func() {
+
+			By("Create namespace-scoped ArgoCD instance namespace")
+
+			// Create namespace for hosting namespace-scoped ArgoCD instance with principal
+			nsScoped, cleanupFuncScoped := fixture.CreateNamespaceWithCleanupFunc("argocd-agent-principal-ns-scoped-1-051")
+			defer cleanupFuncScoped()
+
+			// Update namespace in ArgoCD CR
+			argoCD.Namespace = nsScoped.Name
+
+			// Update namespace in resource references
+			serviceAccount.Namespace = nsScoped.Name
+			role.Namespace = nsScoped.Name
+			roleBinding.Namespace = nsScoped.Name
+			principalDeployment.Namespace = nsScoped.Name
+			principalRoute.Namespace = nsScoped.Name
+			clusterRole.Name = fmt.Sprintf("%s-%s-agent-principal", argoCDName, nsScoped.Name)
+			clusterRoleBinding.Name = fmt.Sprintf("%s-%s-agent-principal", argoCDName, nsScoped.Name)
+
+			By("Pre-create ClusterRole and ClusterRoleBinding before ArgoCD instance")
+
+			preExistingClusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterRole.Name,
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "test",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, preExistingClusterRole)).To(Succeed())
+
+			preExistingClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterRoleBinding.Name,
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "test",
+					},
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind:      rbacv1.ServiceAccountKind,
+						Name:      "default",
+						Namespace: nsScoped.Name,
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     clusterRole.Name,
+				},
+			}
+			Expect(k8sClient.Create(ctx, preExistingClusterRoleBinding)).To(Succeed())
+
+			By("Verify pre-existing ClusterRole and ClusterRoleBinding exist")
+
+			Eventually(clusterRole, "30s", "1s").Should(k8sFixture.ExistByName(),
+				"Pre-existing ClusterRole '%s' should exist before ArgoCD instance creation", clusterRole.Name)
+			Eventually(clusterRoleBinding, "30s", "1s").Should(k8sFixture.ExistByName(),
+				"Pre-existing ClusterRoleBinding '%s' should exist before ArgoCD instance creation", clusterRoleBinding.Name)
+
+			By("Create namespace-scoped ArgoCD instance with principal")
+
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			By("Verify pre-existing ClusterRole and ClusterRoleBinding are deleted")
+
+			Eventually(clusterRole, "60s", "2s").Should(k8sFixture.NotExistByName(),
+				"ClusterRole '%s' should be deleted for namespace-scoped ArgoCD instance", clusterRole.Name)
+
+			Eventually(clusterRoleBinding, "60s", "2s").Should(k8sFixture.NotExistByName(),
+				"ClusterRoleBinding '%s' should be deleted for namespace-scoped ArgoCD instance", clusterRoleBinding.Name)
+
+			By("Delete ArgoCD instance")
+			Expect(k8sClient.Delete(ctx, argoCD)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, client.ObjectKey{Name: argoCD.Name, Namespace: argoCD.Namespace}, argoCD)
+				return err != nil
+			}, "60s", "2s").Should(BeTrue(), "ArgoCD should be deleted")
+		})
+
+		It("should create principal NetworkPolicy if principal is enabled", func() {
+			By("Create ArgoCD instance with principal enabled")
+
+			argoCD.Spec.ArgoCDAgent.Principal.Enabled = ptr.To(true)
+			Expect(k8sClient.Create(ctx, argoCD)).To(Succeed())
+
+			verifyExpectedResourcesExist(ns)
+			By("Verify principal NetworkPolicy exists and has expected policy addresses and ports")
+
+			Expect(principalNetworkPolicy.Spec.PodSelector.MatchLabels[common.ArgoCDKeyName]).To(Equal(argoCDAgentPrincipalName))
+			Expect(principalNetworkPolicy.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeIngress))
+			Expect(principalNetworkPolicy.Spec.Ingress).To(HaveLen(2))
+
+			ing := principalNetworkPolicy.Spec.Ingress[0]
+			Expect(ing.From).To(HaveLen(1))
+			Expect(ing.From[0].NamespaceSelector).ToNot(BeNil())
+			Expect(*ing.From[0].NamespaceSelector).To(Equal(metav1.LabelSelector{}))
+
+			// Ports the principal exposes (see argocdagent deployment/service code)
+			expectedPorts := map[int32]bool{
+				8443: true, // principal HTTPS target port
+				8000: true, // metrics
+				6379: true, // redis proxy
+				9090: true, // resource proxy
+				8003: true, // healthz
+			}
+			Expect(ing.Ports).To(HaveLen(len(expectedPorts)))
+			for _, p := range ing.Ports {
+				Expect(p.Port).ToNot(BeNil())
+				Expect(expectedPorts[p.Port.IntVal]).To(BeTrue(), "unexpected ingress port %d", p.Port.IntVal)
+			}
+			Expect(principalNetworkPolicy.Spec.Ingress[1].From).To(HaveLen(1))
+
+			Expect(*principalNetworkPolicy.Spec.Ingress[1].From[0].IPBlock).To(Equal(networkingv1.IPBlock{CIDR: "0.0.0.0/0"}))
+			Expect(principalNetworkPolicy.Spec.Ingress[1].Ports).To(HaveLen(2))
+			Expect(principalNetworkPolicy.Spec.Ingress[1].Ports[0].Port.IntVal).To(Equal(int32(8443)))
+			Expect(principalNetworkPolicy.Spec.Ingress[1].Ports[1].Port.IntVal).To(Equal(int32(443)))
+
+			By("Verify principal NetworkPolicy is deleted when principal instance is disabled")
+
+			argocdFixture.Update(argoCD, func(ac *argov1beta1api.ArgoCD) {
+				ac.Spec.ArgoCDAgent.Principal.Enabled = nil
+			})
+
+			Eventually(principalNetworkPolicy).Should(k8sFixture.NotExistByName())
+
+			By("Verify principal NetworkPolicy is created when principal instance is enabled and network policy is enabled")
+
+			argocdFixture.Update(argoCD, func(ac *argov1beta1api.ArgoCD) {
+				ac.Spec.ArgoCDAgent.Principal.Enabled = ptr.To(true)
+				ac.Spec.NetworkPolicy.Enabled = ptr.To(true)
+			})
+			Eventually(principalNetworkPolicy).Should(k8sFixture.ExistByName())
+
+			By("Verify principal NetworkPolicy is not created when network policy is disabled")
+
+			argocdFixture.Update(argoCD, func(ac *argov1beta1api.ArgoCD) {
+				ac.Spec.NetworkPolicy.Enabled = ptr.To(false)
+			})
+
+			Eventually(principalNetworkPolicy).Should(k8sFixture.NotExistByName())
 		})
 	})
 })

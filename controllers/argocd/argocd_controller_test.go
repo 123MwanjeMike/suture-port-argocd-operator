@@ -17,6 +17,7 @@ package argocd
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,8 @@ import (
 	testclient "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	configv1 "github.com/openshift/api/config/v1"
+	routev1 "github.com/openshift/api/route/v1"
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -48,13 +51,14 @@ var _ reconcile.Reconciler = &ReconcileArgoCD{}
 // We have owner references set on created resources, this triggers automatic
 // deletion of the associated objects.
 func TestReconcileArgoCD_Reconcile_with_deleted(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	logf.SetLogger(ZapLogger(true))
 	a := makeTestArgoCD(deletedAt(time.Now()))
 
 	resObjs := []client.Object{a}
 	subresObjs := []client.Object{a}
 	runtimeObjs := []runtime.Object{}
-	sch := makeTestReconcilerScheme(argoproj.AddToScheme)
+	sch := makeTestReconcilerScheme(argoproj.AddToScheme, configv1.Install, routev1.Install)
 	cl := makeTestReconcilerClient(sch, resObjs, subresObjs, runtimeObjs)
 	r := makeTestReconciler(cl, sch, testclient.NewSimpleClientset())
 
@@ -80,6 +84,7 @@ func TestReconcileArgoCD_Reconcile_with_deleted(t *testing.T) {
 
 // TestReconcileArgoCD_DexWorkloads verifies that when dex is enabled, that the appropriate operator resources are created. When dex is disabled, the objects are verified to be removed.
 func TestReconcileArgoCD_DexWorkloads(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	logf.SetLogger(ZapLogger(true))
 	a := makeTestArgoCD()
 
@@ -94,7 +99,7 @@ func TestReconcileArgoCD_DexWorkloads(t *testing.T) {
 	resObjs := []client.Object{a}
 	subresObjs := []client.Object{a}
 	runtimeObjs := []runtime.Object{}
-	sch := makeTestReconcilerScheme(argoproj.AddToScheme)
+	sch := makeTestReconcilerScheme(argoproj.AddToScheme, configv1.Install, routev1.Install)
 	cl := makeTestReconcilerClient(sch, resObjs, subresObjs, runtimeObjs)
 	r := makeTestReconciler(cl, sch, testclient.NewSimpleClientset())
 
@@ -183,13 +188,14 @@ func TestReconcileArgoCD_DexWorkloads(t *testing.T) {
 }
 
 func TestReconcileArgoCD_Reconcile(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	logf.SetLogger(ZapLogger(true))
 	a := makeTestArgoCD()
 
 	resObjs := []client.Object{a}
 	subresObjs := []client.Object{a}
 	runtimeObjs := []runtime.Object{}
-	sch := makeTestReconcilerScheme(argoproj.AddToScheme)
+	sch := makeTestReconcilerScheme(argoproj.AddToScheme, configv1.Install, routev1.Install)
 	cl := makeTestReconcilerClient(sch, resObjs, subresObjs, runtimeObjs)
 	r := makeTestReconciler(cl, sch, testclient.NewSimpleClientset())
 
@@ -215,6 +221,7 @@ func TestReconcileArgoCD_Reconcile(t *testing.T) {
 }
 
 func TestReconcileArgoCD_LabelSelector(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	logf.SetLogger(ZapLogger(true))
 	//ctx := context.Background()
 	a := makeTestArgoCD(func(ac *argoproj.ArgoCD) {
@@ -232,7 +239,7 @@ func TestReconcileArgoCD_LabelSelector(t *testing.T) {
 	resObjs := []client.Object{a, b, c}
 	subresObjs := []client.Object{a, b, c}
 	runtimeObjs := []runtime.Object{}
-	sch := makeTestReconcilerScheme(argoproj.AddToScheme)
+	sch := makeTestReconcilerScheme(argoproj.AddToScheme, configv1.Install, routev1.Install)
 	cl := makeTestReconcilerClient(sch, resObjs, subresObjs, runtimeObjs)
 	rt := makeTestReconciler(cl, sch, testclient.NewSimpleClientset())
 
@@ -305,6 +312,7 @@ func TestReconcileArgoCD_LabelSelector(t *testing.T) {
 }
 
 func TestReconcileArgoCD_Reconcile_RemoveManagedByLabelOnArgocdDeletion(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	logf.SetLogger(ZapLogger(true))
 
 	tests := []struct {
@@ -387,6 +395,7 @@ func deletedAt(now time.Time) argoCDOpt {
 }
 
 func TestReconcileArgoCD_CleanUp(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	logf.SetLogger(ZapLogger(true))
 	a := makeTestArgoCD(deletedAt(time.Now()), addFinalizer(common.ArgoCDDeletionFinalizer))
 
@@ -467,6 +476,7 @@ func clusterResources(argocd *argoproj.ArgoCD) []client.Object {
 }
 
 func TestReconcileArgoCD_Status_Condition(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	logf.SetLogger(ZapLogger(true))
 
 	a := makeTestArgoCD(func(ac *argoproj.ArgoCD) {
@@ -477,7 +487,7 @@ func TestReconcileArgoCD_Status_Condition(t *testing.T) {
 	resObjs := []client.Object{a}
 	subresObjs := []client.Object{a}
 	runtimeObjs := []runtime.Object{}
-	sch := makeTestReconcilerScheme(argoproj.AddToScheme)
+	sch := makeTestReconcilerScheme(argoproj.AddToScheme, configv1.Install, routev1.Install)
 	cl := makeTestReconcilerClient(sch, resObjs, subresObjs, runtimeObjs)
 	rt := makeTestReconciler(cl, sch, testclient.NewSimpleClientset())
 	rt.LabelSelector = "foo=bar"
@@ -522,6 +532,7 @@ func TestReconcileArgoCD_Status_Condition(t *testing.T) {
 }
 
 func TestReconcileArgoCD_Cleanup_RBACs_When_NamespaceManagement_Disabled(t *testing.T) {
+	argoutil.SetRouteAPIFound(true) // Setup Route API for tests that call full reconciler
 	namespace := testNamespace
 	argoCD := makeArgoCD()
 	argoCD.Spec.NamespaceManagement = nil
@@ -540,7 +551,7 @@ func TestReconcileArgoCD_Cleanup_RBACs_When_NamespaceManagement_Disabled(t *test
 	resObjs := []client.Object{argoCD, nsMgmt}
 	subresObjs := []client.Object{argoCD}
 	runtimeObjs := []runtime.Object{}
-	sch := makeTestReconcilerScheme(argoproj.AddToScheme)
+	sch := makeTestReconcilerScheme(argoproj.AddToScheme, configv1.Install, routev1.Install)
 	cl := makeTestReconcilerClient(sch, resObjs, subresObjs, runtimeObjs)
 	r := makeTestReconciler(cl, sch, testclient.NewSimpleClientset())
 
@@ -589,4 +600,214 @@ func TestReconcileArgoCD_Cleanup_RBACs_When_NamespaceManagement_Disabled(t *test
 	updatedSecret, err := client.CoreV1().Secrets(argoCD.Namespace).Get(context.TODO(), secret.Name, metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.Equal(t, "", string(updatedSecret.Data["namespaces"]))
+}
+
+func Test_restoreTrackingLabelsForOrphanedNamespaces(t *testing.T) {
+	ctx := context.Background()
+	// Test setup
+	argocd := &argoproj.ArgoCD{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "argocd",
+			Namespace: "argocd",
+		},
+	}
+
+	nsWithoutAppsetLabel := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ns-without-appset-label",
+			Labels: map[string]string{
+				// intentionally missing appset tracking label
+				common.ArgoCDManagedByClusterArgoCDLabel: argocd.Namespace,
+			},
+		},
+	}
+
+	nsWithoutAppsetLabelButWildcard := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ns-without-appset-label-but-wildcard",
+			Labels: map[string]string{
+				// intentionally missing appset tracking label
+				common.ArgoCDManagedByClusterArgoCDLabel: argocd.Namespace,
+			},
+		},
+	}
+
+	nsWithAppsetLabel := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ns-with-appset-label",
+			Labels: map[string]string{
+				common.ArgoCDManagedByClusterArgoCDLabel:               argocd.Namespace,
+				common.ArgoCDApplicationSetManagedByClusterArgoCDLabel: argocd.Namespace,
+			},
+		},
+	}
+
+	nsRandom := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "random-ns",
+			Labels: map[string]string{
+				common.ArgoCDManagedByClusterArgoCDLabel:               argocd.Namespace,
+				common.ArgoCDApplicationSetManagedByClusterArgoCDLabel: argocd.Namespace,
+			},
+		},
+	}
+
+	// ArgoCD instance namespace (must never be mutated)
+	argocdNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: argocd.Namespace,
+		},
+	}
+
+	// RBAC rules required for orphan validation
+	appScopedRules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"argoproj.io"},
+			Resources: []string{"applicationsets"},
+			Verbs:     []string{"get", "list"},
+		},
+	}
+
+	// Roles
+	appsetRoleName := getResourceNameForApplicationSetSourceNamespaces(argocd)
+
+	// AppSet role in namespace that already has the label
+	appsetRoleInLabelledNS := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      appsetRoleName,
+			Namespace: nsWithAppsetLabel.Name,
+			Labels: map[string]string{
+				common.ArgoCDKeyManagedBy: argocd.Name,
+				common.ArgoCDKeyPartOf:    common.ArgoCDAppName,
+			},
+		},
+		Rules: appScopedRules,
+	}
+
+	// AppSet role in namespace missing the label (should trigger restore)
+	appsetRoleInUnlabelledNS := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      appsetRoleName,
+			Namespace: nsWithoutAppsetLabel.Name,
+			Labels: map[string]string{
+				common.ArgoCDKeyManagedBy: argocd.Name,
+				common.ArgoCDKeyPartOf:    common.ArgoCDAppName,
+			},
+		},
+		Rules: appScopedRules,
+	}
+
+	// AppSet role in namespace missing the label (should trigger restore) but having resources has *
+	appSetRoleInUnlabelledNSWithWildcard := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      appsetRoleName,
+			Namespace: nsWithoutAppsetLabelButWildcard.Name,
+			Labels: map[string]string{
+				common.ArgoCDKeyManagedBy: argocd.Name,
+				common.ArgoCDKeyPartOf:    common.ArgoCDAppName,
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"argoproj.io"},
+				Resources: []string{"*"},
+				Verbs:     []string{"get", "list"},
+			},
+		},
+	}
+
+	// Same role name but in ArgoCD namespace (must be ignored)
+	roleInArgoCDNS := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      appsetRoleName,
+			Namespace: argocd.Namespace,
+			Labels: map[string]string{
+				common.ArgoCDKeyManagedBy: argocd.Name,
+				common.ArgoCDKeyPartOf:    common.ArgoCDAppName,
+			},
+		},
+		Rules: appScopedRules,
+	}
+
+	// Completely unrelated role (no rules, should be ignored)
+	randomRole := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "random-role",
+			Namespace: nsRandom.Name,
+			Labels: map[string]string{
+				common.ArgoCDKeyManagedBy: argocd.Name,
+				common.ArgoCDKeyPartOf:    common.ArgoCDAppName,
+			},
+		},
+	}
+
+	// Fake client + reconciler
+	resObjs := []client.Object{
+		argocd,
+		nsWithoutAppsetLabel,
+		nsWithoutAppsetLabelButWildcard,
+		nsWithAppsetLabel,
+		nsRandom,
+		argocdNamespace,
+		appsetRoleInLabelledNS,
+		appsetRoleInUnlabelledNS,
+		appSetRoleInUnlabelledNSWithWildcard,
+		roleInArgoCDNS,
+		randomRole,
+	}
+
+	subresObjs := append([]client.Object{}, resObjs...)
+	runtimeObjs := []runtime.Object{}
+
+	scheme := makeTestReconcilerScheme(argoproj.AddToScheme)
+	cl := makeTestReconcilerClient(scheme, resObjs, subresObjs, runtimeObjs)
+	kubeClient := testclient.NewSimpleClientset()
+
+	reconciler := makeTestReconciler(cl, scheme, kubeClient)
+
+	// Capture original labels for immutability assertions
+	origWithout := maps.Clone(nsWithoutAppsetLabel.Labels)
+	origWithoutButWildcard := maps.Clone(nsWithoutAppsetLabelButWildcard.Labels)
+	origWith := maps.Clone(nsWithAppsetLabel.Labels)
+	origRandom := maps.Clone(nsRandom.Labels)
+
+	// Execute
+	err := reconciler.restoreTrackingLabelsForOrphanedNamespaces(ctx, argocd)
+	assert.NoError(t, err)
+
+	// Assertions
+	// 1) Namespace with AppSet resources but missing label -> label restored
+	updatedWithout := &corev1.Namespace{}
+	assert.NoError(t, cl.Get(ctx, types.NamespacedName{Name: nsWithoutAppsetLabel.Name}, updatedWithout))
+
+	assert.Equal(t, origWithout[common.ArgoCDManagedByClusterArgoCDLabel], updatedWithout.Labels[common.ArgoCDManagedByClusterArgoCDLabel])
+
+	assert.Equal(t, argocd.Namespace, updatedWithout.Labels[common.ArgoCDApplicationSetManagedByClusterArgoCDLabel], "expected appset tracking label to be restored")
+
+	// 1b) Namespace with wildcard resources but missing label -> label restored
+	updatedWithoutButWildcard := &corev1.Namespace{}
+	assert.NoError(t, cl.Get(ctx, types.NamespacedName{Name: nsWithoutAppsetLabelButWildcard.Name}, updatedWithoutButWildcard))
+
+	assert.Equal(t, origWithoutButWildcard[common.ArgoCDManagedByClusterArgoCDLabel], updatedWithoutButWildcard.Labels[common.ArgoCDManagedByClusterArgoCDLabel])
+
+	assert.Equal(t, argocd.Namespace, updatedWithoutButWildcard.Labels[common.ArgoCDApplicationSetManagedByClusterArgoCDLabel], "expected appset tracking label to be restored")
+
+	// 2) Namespace already labelled -> unchanged
+	updatedWith := &corev1.Namespace{}
+	assert.NoError(t, cl.Get(ctx, types.NamespacedName{Name: nsWithAppsetLabel.Name}, updatedWith))
+	assert.Equal(t, origWith, updatedWith.Labels)
+
+	// 3) Namespace with unrelated role -> unchanged
+	updatedRandom := &corev1.Namespace{}
+	assert.NoError(t, cl.Get(ctx, types.NamespacedName{Name: nsRandom.Name}, updatedRandom))
+	assert.Equal(t, origRandom, updatedRandom.Labels)
+
+	// 4) ArgoCD instance namespace -> never labeled
+	updatedArgoCDNS := &corev1.Namespace{}
+	assert.NoError(t, cl.Get(ctx, types.NamespacedName{Name: argocd.Namespace}, updatedArgoCDNS))
+
+	if updatedArgoCDNS.Labels != nil {
+		assert.NotContains(t, updatedArgoCDNS.Labels, common.ArgoCDApplicationSetManagedByClusterArgoCDLabel)
+		assert.NotContains(t, updatedArgoCDNS.Labels, common.ArgoCDManagedByClusterArgoCDLabel)
+	}
 }

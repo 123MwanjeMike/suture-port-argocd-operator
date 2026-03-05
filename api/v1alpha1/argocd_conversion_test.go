@@ -9,6 +9,7 @@ import (
 	v1 "k8s.io/api/networking/v1"
 	resourcev1 "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
 	v1beta1 "github.com/argoproj-labs/argocd-operator/api/v1beta1"
@@ -527,8 +528,14 @@ func TestAlphaToBetaConversion(t *testing.T) {
 				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
 					Principal: &PrincipalSpec{
 						Enabled: &enabled,
+						Auth:    "mtls:CN=([^,]+)",
 						Server: &PrincipalServerSpec{
-							Auth: "mtls:CN=([^,]+)",
+							Service: ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeClusterIP,
+							},
+							Route: ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(true),
+							},
 						},
 					},
 				}
@@ -538,8 +545,14 @@ func TestAlphaToBetaConversion(t *testing.T) {
 				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
 					Principal: &v1beta1.PrincipalSpec{
 						Enabled: &enabled,
+						Auth:    "mtls:CN=([^,]+)",
 						Server: &v1beta1.PrincipalServerSpec{
-							Auth: "mtls:CN=([^,]+)",
+							Service: v1beta1.ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeClusterIP,
+							},
+							Route: v1beta1.ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(true),
+							},
 						},
 					},
 				}
@@ -555,14 +568,20 @@ func TestAlphaToBetaConversion(t *testing.T) {
 				allowGenerate := true
 				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
 					Principal: &PrincipalSpec{
-						Enabled: &enabled,
+						Enabled:   &enabled,
+						Auth:      "mtls:CN=([^,]+)",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
 						Server: &PrincipalServerSpec{
-							Auth:                 "mtls:CN=([^,]+)",
 							EnableWebSocket:      &enableWebSocket,
-							LogLevel:             "info",
-							LogFormat:            "text",
-							Image:                "quay.io/user/argocd-agent:v1",
 							KeepAliveMinInterval: "30s",
+							Service: ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeLoadBalancer,
+							},
+							Route: ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(false),
+							},
 						},
 						Redis: &PrincipalRedisSpec{
 							ServerAddress:   "redis:6379",
@@ -598,14 +617,20 @@ func TestAlphaToBetaConversion(t *testing.T) {
 				insecureGenerate := true
 				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
 					Principal: &v1beta1.PrincipalSpec{
-						Enabled: &enabled,
+						Enabled:   &enabled,
+						Auth:      "mtls:CN=([^,]+)",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
 						Server: &v1beta1.PrincipalServerSpec{
-							Auth:                 "mtls:CN=([^,]+)",
 							EnableWebSocket:      &enableWebSocket,
-							LogLevel:             "info",
-							LogFormat:            "text",
 							KeepAliveMinInterval: "30s",
-							Image:                "quay.io/user/argocd-agent:v1",
+							Service: v1beta1.ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeLoadBalancer,
+							},
+							Route: v1beta1.ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(false),
+							},
 						},
 						Redis: &v1beta1.PrincipalRedisSpec{
 							ServerAddress:   "redis:6379",
@@ -648,6 +673,121 @@ func TestAlphaToBetaConversion(t *testing.T) {
 				enabled := false
 				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
 					Principal: &v1beta1.PrincipalSpec{
+						Enabled: &enabled,
+					},
+				}
+			}),
+		},
+		{
+			name: "ArgoCD Example - Agent Agent Basic",
+			input: makeTestArgoCDAlpha(func(cr *ArgoCD) {
+				enabled := true
+				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
+					Agent: &AgentSpec{
+						Enabled: &enabled,
+						Creds:   "mtls:any",
+						Client: &AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+						},
+					},
+				}
+			}),
+			expectedOutput: makeTestArgoCDBeta(func(cr *v1beta1.ArgoCD) {
+				enabled := true
+				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
+					Agent: &v1beta1.AgentSpec{
+						Enabled: &enabled,
+						Creds:   "mtls:any",
+						Client: &v1beta1.AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+						},
+					},
+				}
+			}),
+		},
+		{
+			name: "ArgoCD Example - Agent Agent Full Configuration",
+			input: makeTestArgoCDAlpha(func(cr *ArgoCD) {
+				enabled := true
+				enableWebSocket := true
+				enableCompression := true
+				insecure := true
+				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
+					Agent: &AgentSpec{
+						Enabled:   &enabled,
+						Creds:     "mtls:any",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
+						Client: &AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+							EnableWebSocket:        &enableWebSocket,
+							EnableCompression:      &enableCompression,
+							KeepAliveInterval:      "30s",
+						},
+						Redis: &AgentRedisSpec{
+							ServerAddress: "redis:6379",
+						},
+						TLS: &AgentTLSSpec{
+							SecretName:       "agent-tls-secret",
+							RootCASecretName: "agent-ca-secret",
+							Insecure:         &insecure,
+						},
+					},
+				}
+			}),
+			expectedOutput: makeTestArgoCDBeta(func(cr *v1beta1.ArgoCD) {
+				enabled := true
+				enableWebSocket := true
+				enableCompression := true
+				insecure := true
+				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
+					Agent: &v1beta1.AgentSpec{
+						Enabled:   &enabled,
+						Creds:     "mtls:any",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
+						Client: &v1beta1.AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+							EnableWebSocket:        &enableWebSocket,
+							EnableCompression:      &enableCompression,
+							KeepAliveInterval:      "30s",
+						},
+						Redis: &v1beta1.AgentRedisSpec{
+							ServerAddress: "redis:6379",
+						},
+						TLS: &v1beta1.AgentTLSSpec{
+							SecretName:       "agent-tls-secret",
+							RootCASecretName: "agent-ca-secret",
+							Insecure:         &insecure,
+						},
+					},
+				}
+			}),
+		},
+		{
+			name: "ArgoCD Example - Agent Agent Disabled",
+			input: makeTestArgoCDAlpha(func(cr *ArgoCD) {
+				enabled := false
+				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
+					Agent: &AgentSpec{
+						Enabled: &enabled,
+					},
+				}
+			}),
+			expectedOutput: makeTestArgoCDBeta(func(cr *v1beta1.ArgoCD) {
+				enabled := false
+				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
+					Agent: &v1beta1.AgentSpec{
 						Enabled: &enabled,
 					},
 				}
@@ -758,8 +898,14 @@ func TestBetaToAlphaConversion(t *testing.T) {
 				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
 					Principal: &v1beta1.PrincipalSpec{
 						Enabled: &enabled,
+						Auth:    "mtls:CN=([^,]+)",
 						Server: &v1beta1.PrincipalServerSpec{
-							Auth: "mtls:CN=([^,]+)",
+							Service: v1beta1.ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeNodePort,
+							},
+							Route: v1beta1.ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(true),
+							},
 						},
 					},
 				}
@@ -769,8 +915,14 @@ func TestBetaToAlphaConversion(t *testing.T) {
 				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
 					Principal: &PrincipalSpec{
 						Enabled: &enabled,
+						Auth:    "mtls:CN=([^,]+)",
 						Server: &PrincipalServerSpec{
-							Auth: "mtls:CN=([^,]+)",
+							Service: ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeNodePort,
+							},
+							Route: ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(true),
+							},
 						},
 					},
 				}
@@ -786,16 +938,22 @@ func TestBetaToAlphaConversion(t *testing.T) {
 				insecureGenerate := true
 				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
 					Principal: &v1beta1.PrincipalSpec{
-						Enabled: &enabled,
+						Enabled:   &enabled,
+						Auth:      "mtls:CN=([^,]+)",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
+						Env: []corev1.EnvVar{
+							{Name: "TEST_ENV", Value: "test-value"},
+						},
 						Server: &v1beta1.PrincipalServerSpec{
-							Auth:                 "mtls:CN=([^,]+)",
 							EnableWebSocket:      &enableWebSocket,
-							LogLevel:             "info",
-							LogFormat:            "text",
 							KeepAliveMinInterval: "30s",
-							Image:                "quay.io/user/argocd-agent:v1",
-							Env: []corev1.EnvVar{
-								{Name: "TEST_ENV", Value: "test-value"},
+							Service: v1beta1.ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeExternalName,
+							},
+							Route: v1beta1.ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(false),
 							},
 						},
 						Redis: &v1beta1.PrincipalRedisSpec{
@@ -832,16 +990,22 @@ func TestBetaToAlphaConversion(t *testing.T) {
 				insecureGenerate := true
 				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
 					Principal: &PrincipalSpec{
-						Enabled: &enabled,
+						Enabled:   &enabled,
+						Auth:      "mtls:CN=([^,]+)",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
+						Env: []corev1.EnvVar{
+							{Name: "TEST_ENV", Value: "test-value"},
+						},
 						Server: &PrincipalServerSpec{
-							Auth:                 "mtls:CN=([^,]+)",
 							EnableWebSocket:      &enableWebSocket,
-							LogLevel:             "info",
-							LogFormat:            "text",
-							Image:                "quay.io/user/argocd-agent:v1",
 							KeepAliveMinInterval: "30s",
-							Env: []corev1.EnvVar{
-								{Name: "TEST_ENV", Value: "test-value"},
+							Service: ArgoCDAgentPrincipalServiceSpec{
+								Type: corev1.ServiceTypeExternalName,
+							},
+							Route: ArgoCDAgentPrincipalRouteSpec{
+								Enabled: ptr.To(false),
 							},
 						},
 						Redis: &PrincipalRedisSpec{
@@ -885,6 +1049,127 @@ func TestBetaToAlphaConversion(t *testing.T) {
 				enabled := false
 				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
 					Principal: &PrincipalSpec{
+						Enabled: &enabled,
+					},
+				}
+			}),
+		},
+		{
+			name: "ArgoCD Example - Agent Agent Basic",
+			input: makeTestArgoCDBeta(func(cr *v1beta1.ArgoCD) {
+				enabled := true
+				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
+					Agent: &v1beta1.AgentSpec{
+						Enabled: &enabled,
+						Creds:   "mtls:any",
+						Client: &v1beta1.AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+						},
+					},
+				}
+			}),
+			expectedOutput: makeTestArgoCDAlpha(func(cr *ArgoCD) {
+				enabled := true
+				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
+					Agent: &AgentSpec{
+						Enabled: &enabled,
+						Creds:   "mtls:any",
+						Client: &AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+						},
+					},
+				}
+			}),
+		},
+		{
+			name: "ArgoCD Example - Agent Agent Full Configuration",
+			input: makeTestArgoCDBeta(func(cr *v1beta1.ArgoCD) {
+				enabled := true
+				enableWebSocket := true
+				enableCompression := true
+				insecure := true
+				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
+					Agent: &v1beta1.AgentSpec{
+						Enabled:   &enabled,
+						Creds:     "mtls:any",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
+						Env: []corev1.EnvVar{
+							{Name: "TEST_ENV", Value: "test-value"},
+						},
+						Client: &v1beta1.AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+							EnableWebSocket:        &enableWebSocket,
+							EnableCompression:      &enableCompression,
+							KeepAliveInterval:      "30s",
+						},
+						Redis: &v1beta1.AgentRedisSpec{
+							ServerAddress: "redis:6379",
+						},
+						TLS: &v1beta1.AgentTLSSpec{
+							SecretName:       "agent-tls-secret",
+							RootCASecretName: "agent-ca-secret",
+							Insecure:         &insecure,
+						},
+					},
+				}
+			}),
+			expectedOutput: makeTestArgoCDAlpha(func(cr *ArgoCD) {
+				enabled := true
+				enableWebSocket := true
+				enableCompression := true
+				insecure := true
+				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
+					Agent: &AgentSpec{
+						Enabled:   &enabled,
+						Creds:     "mtls:any",
+						LogLevel:  "info",
+						LogFormat: "text",
+						Image:     "quay.io/user/argocd-agent:v1",
+						Env: []corev1.EnvVar{
+							{Name: "TEST_ENV", Value: "test-value"},
+						},
+						Client: &AgentClientSpec{
+							PrincipalServerAddress: "argocd-agent-principal.example.com",
+							PrincipalServerPort:    "443",
+							Mode:                   string(v1beta1.AgentModeManaged),
+							EnableWebSocket:        &enableWebSocket,
+							EnableCompression:      &enableCompression,
+							KeepAliveInterval:      "30s",
+						},
+						Redis: &AgentRedisSpec{
+							ServerAddress: "redis:6379",
+						},
+						TLS: &AgentTLSSpec{
+							SecretName:       "agent-tls-secret",
+							RootCASecretName: "agent-ca-secret",
+							Insecure:         &insecure,
+						},
+					},
+				}
+			}),
+		},
+		{
+			name: "ArgoCD Example - Agent Agent Disabled",
+			input: makeTestArgoCDBeta(func(cr *v1beta1.ArgoCD) {
+				enabled := false
+				cr.Spec.ArgoCDAgent = &v1beta1.ArgoCDAgentSpec{
+					Agent: &v1beta1.AgentSpec{
+						Enabled: &enabled,
+					},
+				}
+			}),
+			expectedOutput: makeTestArgoCDAlpha(func(cr *ArgoCD) {
+				enabled := false
+				cr.Spec.ArgoCDAgent = &ArgoCDAgentSpec{
+					Agent: &AgentSpec{
 						Enabled: &enabled,
 					},
 				}

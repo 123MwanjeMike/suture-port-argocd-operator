@@ -155,7 +155,7 @@ func (r *ReconcileArgoCD) reconcileRedisStatefulSet(cr *argoproj.ArgoCD) error {
 			},
 			Env:             redisEnv,
 			Image:           getRedisHAContainerImage(cr),
-			ImagePullPolicy: corev1.PullIfNotPresent,
+			ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					Exec: &corev1.ExecAction{
@@ -219,7 +219,7 @@ func (r *ReconcileArgoCD) reconcileRedisStatefulSet(cr *argoproj.ArgoCD) error {
 			},
 			Env:             redisEnv,
 			Image:           getRedisHAContainerImage(cr),
-			ImagePullPolicy: corev1.PullIfNotPresent,
+			ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 			LivenessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					Exec: &corev1.ExecAction{
@@ -328,7 +328,7 @@ func (r *ReconcileArgoCD) reconcileRedisStatefulSet(cr *argoproj.ArgoCD) error {
 			},
 		},
 		Image:           getRedisHAContainerImage(cr),
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 		Name:            "config-init",
 		Resources:       getRedisHAResources(cr),
 		SecurityContext: argoutil.DefaultSecurityContext(),
@@ -460,6 +460,14 @@ func (r *ReconcileArgoCD) reconcileRedisStatefulSet(cr *argoproj.ArgoCD) error {
 				explanation += fmt.Sprintf("container '%s' VolumeMounts", container.Name)
 				changed = true
 			}
+			if existing.Spec.Template.Spec.Containers[i].ImagePullPolicy != ss.Spec.Template.Spec.Containers[i].ImagePullPolicy {
+				existing.Spec.Template.Spec.Containers[0].ImagePullPolicy = ss.Spec.Template.Spec.Containers[i].ImagePullPolicy
+				if changed {
+					explanation += ", "
+				}
+				explanation += "image pull policy"
+				changed = true
+			}
 
 			if !reflect.DeepEqual(ss.Spec.Template.Spec.Containers[i].Resources, existing.Spec.Template.Spec.Containers[i].Resources) {
 				existing.Spec.Template.Spec.Containers[i].Resources = ss.Spec.Template.Spec.Containers[i].Resources
@@ -572,6 +580,21 @@ func getArgoControllerContainerEnv(cr *argoproj.ArgoCD, replicas int32) []corev1
 		env = append(env, corev1.EnvVar{
 			Name:  "ARGOCD_RECONCILIATION_TIMEOUT",
 			Value: strconv.FormatInt(int64(cr.Spec.Controller.AppSync.Seconds()), 10) + "s",
+		})
+	} else {
+		// ARGOCD_RECONCILIATION_TIMEOUT is read from argocd-cm ConfigMap (timeout.reconciliation key)
+		// This aligns with upstream ArgoCD behavior where the value is sourced from argocd-cm
+		env = append(env, corev1.EnvVar{
+			Name: "ARGOCD_RECONCILIATION_TIMEOUT",
+			ValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: common.ArgoCDConfigMapName,
+					},
+					Key:      common.ArgoCDKeyTimeout,
+					Optional: boolPtr(true),
+				},
+			},
 		})
 	}
 
@@ -687,7 +710,7 @@ func (r *ReconcileArgoCD) reconcileApplicationControllerStatefulSet(cr *argoproj
 	podSpec.Containers = []corev1.Container{{
 		Command:         getArgoApplicationControllerCommand(cr, useTLSForRedis),
 		Image:           getArgoContainerImage(cr),
-		ImagePullPolicy: corev1.PullAlways,
+		ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 		Name:            "argocd-application-controller",
 		Env:             controllerEnv,
 		Ports: []corev1.ContainerPort{
@@ -823,7 +846,7 @@ func (r *ReconcileArgoCD) reconcileApplicationControllerStatefulSet(cr *argoproj
 			Env:             proxyEnvVars(getArgoImportContainerEnv(export)...),
 			Resources:       getArgoApplicationControllerResources(cr),
 			Image:           getArgoImportContainerImage(export),
-			ImagePullPolicy: corev1.PullAlways,
+			ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 			Name:            "argocd-import",
 			SecurityContext: argoutil.DefaultSecurityContext(),
 			VolumeMounts:    getArgoImportVolumeMounts(),
@@ -867,12 +890,22 @@ func (r *ReconcileArgoCD) reconcileApplicationControllerStatefulSet(cr *argoproj
 		}
 		actualImage := existing.Spec.Template.Spec.Containers[0].Image
 		desiredImage := getArgoContainerImage(cr)
+		actualImagePullPolicy := existing.Spec.Template.Spec.Containers[0].ImagePullPolicy
+		desiredImagePullPolicy := argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy)
 		changed := false
 		explanation := ""
 		if actualImage != desiredImage {
 			existing.Spec.Template.Spec.Containers[0].Image = desiredImage
 			existing.Spec.Template.Labels["image.upgraded"] = time.Now().UTC().Format("01022006-150406-MST")
 			explanation = "container image"
+			changed = true
+		}
+		if actualImagePullPolicy != desiredImagePullPolicy {
+			existing.Spec.Template.Spec.Containers[0].ImagePullPolicy = desiredImagePullPolicy
+			if changed {
+				explanation += ", "
+			}
+			explanation += "image pull policy"
 			changed = true
 		}
 		desiredCommand := getArgoApplicationControllerCommand(cr, useTLSForRedis)

@@ -3,7 +3,6 @@ package argocd
 import (
 	"context"
 	"fmt"
-	"os"
 	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
@@ -53,6 +52,7 @@ func GenerateUniqueResourceName(argoComponentName string, cr *argoproj.ArgoCD) s
 }
 
 func newClusterRole(name string, rules []v1.PolicyRule, cr *argoproj.ArgoCD) *v1.ClusterRole {
+
 	return &v1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        GenerateUniqueResourceName(name, cr),
@@ -217,6 +217,10 @@ func (r *ReconcileArgoCD) reconcileRole(name string, policyRules []v1.PolicyRule
 
 func (r *ReconcileArgoCD) reconcileRoleForApplicationSourceNamespaces(name string, policyRules []v1.PolicyRule, cr *argoproj.ArgoCD) error {
 
+	if !argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace) {
+		return nil
+	}
+
 	// create policy rules for each source namespace for ArgoCD Server
 	sourceNamespaces, err := r.getSourceNamespaces(cr)
 	if err != nil {
@@ -257,13 +261,14 @@ func (r *ReconcileArgoCD) reconcileRoleForApplicationSourceNamespaces(name strin
 		}
 		role.Namespace = namespace.Name
 		// patch rules if appset in source namespace is allowed
-		if contains(r.getApplicationSetSourceNamespaces(cr), sourceNamespace) {
+		appsetSourceNamespaces, err := r.getApplicationSetSourceNamespaces(cr)
+		if err == nil && contains(appsetSourceNamespaces, sourceNamespace) {
 			role.Rules = append(role.Rules, policyRuleForServerApplicationSetSourceNamespaces()...)
 		}
 
 		created := false
 		existingRole := v1.Role{}
-		err := r.Get(context.TODO(), types.NamespacedName{Name: role.Name, Namespace: namespace.Name}, &existingRole)
+		err = r.Get(context.TODO(), types.NamespacedName{Name: role.Name, Namespace: namespace.Name}, &existingRole)
 		if err != nil {
 			if !errors.IsNotFound(err) {
 				return fmt.Errorf("failed to reconcile the role for the service account associated with %s : %s", name, err)
@@ -312,7 +317,7 @@ func (r *ReconcileArgoCD) reconcileRoleForApplicationSourceNamespaces(name strin
 
 func (r *ReconcileArgoCD) reconcileClusterRole(componentName string, policyRules []v1.PolicyRule, cr *argoproj.ArgoCD) (*v1.ClusterRole, error) {
 
-	allowed := allowedNamespace(cr.Namespace, os.Getenv("ARGOCD_CLUSTER_CONFIG_NAMESPACES"))
+	allowed := argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace)
 
 	if err := verifyInstallationMode(cr, allowed); err != nil {
 		log.Error(err, "error occurred in reconcileClusterRole")

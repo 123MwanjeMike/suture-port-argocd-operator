@@ -48,10 +48,12 @@ nav:
   - High Availability:
     - Redis: usage/ha/redis.md
     - Repo Server: usage/ha/repo-server.md
+  - Image Updater: usage/image-updater.md
   - Ingress: usage/ingress.md
   - Insights: usage/insights.md
   - Dex: usage/dex.md
   - Notifications: usage/notifications.md
+  - Notifications in Any Namespace: usage/notifications-in-any-namespace.md
   - Resource Management: usage/resource_management.md
   - Routes: usage/routes.md
   - Respect RBAC: usage/respect_rbac.md
