@@ -36,6 +36,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
@@ -47,8 +48,10 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 		})
 
 		var (
-			k8sClient client.Client
-			ctx       context.Context
+			k8sClient   client.Client
+			ctx         context.Context
+			cleanupFunc func()
+			ns          *corev1.Namespace
 		)
 
 		BeforeEach(func() {
@@ -58,14 +61,20 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 			ctx = context.Background()
 		})
 
+		AfterEach(func() {
+			fixture.OutputDebugOnFail(ns)
+			if ns != nil {
+				cleanupFunc()
+			}
+		})
+
 		It("validates Redis HA and Non-HA", func() {
 
 			// This test enables HA, so it needs to be running on a cluster with at least 3 nodes
 			nodeFixture.ExpectHasAtLeastXNodes(3)
 
 			By("creating simple namespace-scoped Argo CD instance")
-			ns, cleanupFunc := fixture.CreateRandomE2ETestNamespaceWithCleanupFunc()
-			defer cleanupFunc()
+			ns, cleanupFunc = fixture.CreateRandomE2ETestNamespaceWithCleanupFunc()
 
 			argoCDInstance := &argov1beta1api.ArgoCD{
 				ObjectMeta: metav1.ObjectMeta{Name: "example-argocd", Namespace: ns.Name,
@@ -158,6 +167,7 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 
 			depl = &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: argoCDInstance.Name + "-redis-ha-haproxy", Namespace: ns.Name}}
 			Eventually(depl, "2m", "5s").Should(deploymentFixture.HaveReadyReplicas(3))
+			Expect(depl.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(&intstr.IntOrString{IntVal: 0}))
 
 			haProxyContainer := deploymentFixture.GetTemplateSpecContainerByName("haproxy", *depl)
 
@@ -175,7 +185,7 @@ var _ = Describe("GitOps Operator Sequential E2E Tests", func() {
 			Expect(configInitContainer.Resources.Requests.Memory().AsDec().String()).To(Equal("134217728"))
 
 			ss := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: argoCDInstance.Name + "-redis-ha-server", Namespace: ns.Name}}
-			Eventually(ss, "2m", "5s").Should(statefulsetFixture.HaveReadyReplicas(3))
+			Eventually(ss, "4m", "5s").Should(statefulsetFixture.HaveReadyReplicas(3))
 
 			redisContainer := statefulsetFixture.GetTemplateSpecContainerByName("redis", *ss)
 			Expect(redisContainer).ToNot(BeNil())

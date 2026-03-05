@@ -113,7 +113,7 @@ var _ = Describe("GitOps Operator Parallel E2E Tests", func() {
 			err = os.WriteFile(openssl_test_File.Name(), ([]byte)(opensslTestCNFContents), 0666)
 			Expect(err).ToNot(HaveOccurred())
 
-			_, err = osFixture.ExecCommandWithOutputParam(false, "openssl", "req", "-new", "-x509", "-sha256",
+			_, err = osFixture.ExecCommandWithOutputParam(false, true, "openssl", "req", "-new", "-x509", "-sha256",
 				"-subj", "/C=XX/ST=XX/O=Testing/CN=redis",
 				"-reqexts", "SAN",
 				"-extensions", "SAN",
@@ -149,7 +149,7 @@ var _ = Describe("GitOps Operator Parallel E2E Tests", func() {
 
 			if !fixture.IsUpstreamOperatorTests() {
 				// Downstream operator adds these arguments
-				expectedString += "redis-server --protected-mode no"
+				expectedString = "redis-server --protected-mode no " + expectedString
 			}
 
 			Expect(redisDepl).To(deplFixture.HaveContainerCommandSubstring(expectedString, 0),

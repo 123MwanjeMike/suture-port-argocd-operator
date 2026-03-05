@@ -4,15 +4,14 @@ import (
 	"bytes"
 	"context"
 
-	"github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/utils"
-	//lint:ignore ST1001 "This is a common practice in Gomega tests for readability."
-	. "github.com/onsi/ginkgo/v2" //nolint:all
-	//lint:ignore ST1001 "This is a common practice in Gomega tests for readability."
-	. "github.com/onsi/gomega" //nolint:all
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	matcher "github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/argoproj-labs/argocd-operator/tests/ginkgo/fixture/utils"
 )
 
 // Update will keep trying to update object until it succeeds, or times out.
@@ -94,6 +93,16 @@ func HaveDataKeyValue(key string, value []byte) matcher.GomegaMatcher {
 			return false
 		}
 		return bytes.Equal(a, value)
+	})
+
+}
+
+// NotHaveDataKey returns true if Secret's .data 'key' does not exist, false otherwise
+func NotHaveDataKey(key string) matcher.GomegaMatcher {
+	return fetchSecret(func(secret *corev1.Secret) bool {
+		_, exists := secret.Data[key]
+		GinkgoWriter.Println("NotHaveDataKey - key:", key, "Exists:", exists)
+		return !exists
 	})
 
 }

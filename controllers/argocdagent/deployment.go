@@ -108,7 +108,7 @@ func buildPrincipalSpec(compName, saName string, cr *argoproj.ArgoCD) appsv1.Dep
 				Containers: []corev1.Container{
 					{
 						Image:           buildPrincipalImage(cr),
-						ImagePullPolicy: corev1.PullAlways,
+						ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 						Name:            generateAgentResourceName(cr.Name, compName),
 						Env:             buildPrincipalContainerEnv(cr),
 						Args:            buildArgs(compName),
@@ -184,8 +184,8 @@ func buildArgs(compName string) []string {
 
 func buildPrincipalImage(cr *argoproj.ArgoCD) string {
 	// Check CR specification first
-	if hasServer(cr) && cr.Spec.ArgoCDAgent.Principal.Server.Image != "" {
-		return cr.Spec.ArgoCDAgent.Principal.Server.Image
+	if hasPrincipal(cr) && cr.Spec.ArgoCDAgent.Principal.Image != "" {
+		return cr.Spec.ArgoCDAgent.Principal.Image
 	}
 
 	// Value specified in the environment take precedence over the default
@@ -261,6 +261,12 @@ func updateDeploymentIfChanged(compName, saName string, cr *argoproj.ArgoCD, dep
 		log.Info("deployment image is being updated")
 		changed = true
 		deployment.Spec.Template.Spec.Containers[0].Image = buildPrincipalImage(cr)
+	}
+
+	if !reflect.DeepEqual(deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy, argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy)) {
+		log.Info("deployment image pull policy is being updated")
+		changed = true
+		deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy = argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy)
 	}
 
 	if !reflect.DeepEqual(deployment.Spec.Template.Spec.Containers[0].Name, generateAgentResourceName(cr.Name, compName)) {
@@ -365,12 +371,15 @@ func buildPrincipalContainerEnv(cr *argoproj.ArgoCD) []corev1.EnvVar {
 			Name:  EnvArgoCDPrincipalJwtSecretName,
 			Value: getPrincipalJWTSecretName(cr),
 		}, {
+			Name:  EnvArgoCDPrincipalDestinationBasedMapping,
+			Value: getPrincipalDestinationBasedMapping(cr),
+		}, {
 			Name: EnvRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					Key: PrincipalRedisPasswordKey,
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "argocd-redis",
+						Name: fmt.Sprintf("%s-%s", cr.Name, PrincipalRedisSecretnameSuffix),
 					},
 					Optional: ptr.To(true),
 				},
@@ -379,8 +388,8 @@ func buildPrincipalContainerEnv(cr *argoproj.ArgoCD) []corev1.EnvVar {
 	}
 
 	// Add custom environment variables if specified in the CR
-	if hasServer(cr) && cr.Spec.ArgoCDAgent.Principal.Server.Env != nil {
-		env = append(env, cr.Spec.ArgoCDAgent.Principal.Server.Env...)
+	if hasPrincipal(cr) && cr.Spec.ArgoCDAgent.Principal.Env != nil {
+		env = append(env, cr.Spec.ArgoCDAgent.Principal.Env...)
 	}
 
 	return env
@@ -410,23 +419,32 @@ const (
 	EnvArgoCDPrincipalResourceProxyCaSecretName = "ARGOCD_PRINCIPAL_RESOURCE_PROXY_CA_SECRET_NAME"
 	EnvArgoCDPrincipalJwtSecretName             = "ARGOCD_PRINCIPAL_JWT_SECRET_NAME"
 	EnvArgoCDPrincipalImage                     = "ARGOCD_PRINCIPAL_IMAGE"
+	EnvArgoCDPrincipalDestinationBasedMapping   = "ARGOCD_PRINCIPAL_DESTINATION_BASED_MAPPING"
 	EnvRedisPassword                            = "REDIS_PASSWORD"
-	PrincipalRedisPasswordKey                   = "auth"
+	PrincipalRedisPasswordKey                   = "admin.password"
+	PrincipalRedisSecretnameSuffix              = "redis-initial-password" // #nosec G101
 )
 
 // Logging Configuration
 func getPrincipalLogLevel(cr *argoproj.ArgoCD) string {
-	if hasServer(cr) && cr.Spec.ArgoCDAgent.Principal.Server.LogLevel != "" {
-		return cr.Spec.ArgoCDAgent.Principal.Server.LogLevel
+	if hasPrincipal(cr) && cr.Spec.ArgoCDAgent.Principal.LogLevel != "" {
+		return cr.Spec.ArgoCDAgent.Principal.LogLevel
 	}
 	return "info"
 }
 
 func getPrincipalLogFormat(cr *argoproj.ArgoCD) string {
-	if hasServer(cr) && cr.Spec.ArgoCDAgent.Principal.Server.LogFormat != "" {
-		return cr.Spec.ArgoCDAgent.Principal.Server.LogFormat
+	if hasPrincipal(cr) && cr.Spec.ArgoCDAgent.Principal.LogFormat != "" {
+		return cr.Spec.ArgoCDAgent.Principal.LogFormat
 	}
 	return "text"
+}
+
+func getPrincipalDestinationBasedMapping(cr *argoproj.ArgoCD) string {
+	if hasPrincipal(cr) && cr.Spec.ArgoCDAgent.Principal.DestinationBasedMapping != nil {
+		return strconv.FormatBool(*cr.Spec.ArgoCDAgent.Principal.DestinationBasedMapping)
+	}
+	return "false"
 }
 
 func getPrincipalAllowedNamespaces(cr *argoproj.ArgoCD) string {
@@ -476,8 +494,8 @@ func getPrincipalJWTAllowGenerate(cr *argoproj.ArgoCD) string {
 
 // Authentication Configuration
 func getPrincipalAuth(cr *argoproj.ArgoCD) string {
-	if hasServer(cr) && cr.Spec.ArgoCDAgent.Principal.Server.Auth != "" {
-		return cr.Spec.ArgoCDAgent.Principal.Server.Auth
+	if hasPrincipal(cr) && cr.Spec.ArgoCDAgent.Principal.Auth != "" {
+		return cr.Spec.ArgoCDAgent.Principal.Auth
 	}
 	return "mtls:CN=([^,]+)"
 }

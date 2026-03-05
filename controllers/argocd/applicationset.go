@@ -18,8 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
+	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -32,6 +32,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/argoproj/argo-cd/v3/util/glob"
 
 	argoproj "github.com/argoproj-labs/argocd-operator/api/v1beta1"
 	"github.com/argoproj-labs/argocd-operator/common"
@@ -67,32 +69,40 @@ func (r *ReconcileArgoCD) getArgoApplicationSetCommand(cr *argoproj.ArgoCD) []st
 		cmd = append(cmd, ApplicationSetGitlabSCMTlsCertPath)
 	}
 
-	// appset source namespaces should be subset of apps source namespaces
-	appsetsSourceNamespaces := []string{}
-	appsNamespaces, err := r.getSourceNamespaces(cr)
-	if err == nil {
-		for _, ns := range cr.Spec.ApplicationSet.SourceNamespaces {
-			if contains(appsNamespaces, ns) {
-				appsetsSourceNamespaces = append(appsetsSourceNamespaces, ns)
-			} else {
-				log.V(1).Info(fmt.Sprintf("Apps in target sourceNamespace %s is not enabled, thus skipping the namespace in deployment command.", ns))
+	// Only allow applicationsets in any namespace for cluster-scoped clusters
+	if argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace) {
+
+		// appset source namespaces should be subset of apps source namespaces
+		appsetsSourceNamespacesExpanded, err := r.getApplicationSetSourceNamespaces(cr)
+		if err != nil {
+			log.Error(err, "failed to getting ApplicationSet source namespaces")
+		} else {
+			appsNamespaces, err := r.getSourceNamespaces(cr)
+			if err == nil {
+				appsetsSourceNamespaces := []string{}
+				for _, ns := range appsetsSourceNamespacesExpanded {
+					if contains(appsNamespaces, ns) {
+						appsetsSourceNamespaces = append(appsetsSourceNamespaces, ns)
+					} else {
+						log.V(1).Info(fmt.Sprintf("Apps in target sourceNamespace %s is not enabled, thus skipping the namespace in deployment command.", ns))
+					}
+				}
+				if len(appsetsSourceNamespaces) > 0 {
+					cmd = append(cmd, "--applicationset-namespaces", fmt.Sprint(strings.Join(appsetsSourceNamespaces, ",")))
+				}
+
+				// appset in any ns is enabled and no scmProviders allow list is specified,
+				// disables scm & PR generators to prevent potential security issues
+				// https://argo-cd.readthedocs.io/en/stable/operator-manual/applicationset/Appset-Any-Namespace/#scm-providers-secrets-consideration
+				if len(appsetsSourceNamespaces) > 0 && (len(cr.Spec.ApplicationSet.SCMProviders) <= 0) {
+					cmd = append(cmd, "--enable-scm-providers=false")
+				}
 			}
 		}
 	}
 
-	if len(appsetsSourceNamespaces) > 0 {
-		cmd = append(cmd, "--applicationset-namespaces", fmt.Sprint(strings.Join(appsetsSourceNamespaces, ",")))
-	}
-
 	if len(cr.Spec.ApplicationSet.SCMProviders) > 0 {
 		cmd = append(cmd, "--allowed-scm-providers", fmt.Sprint(strings.Join(cr.Spec.ApplicationSet.SCMProviders, ",")))
-	}
-
-	// appset in any ns is enabled and no scmProviders allow list is specified,
-	// disables scm & PR generators to prevent potential security issues
-	// https://argo-cd.readthedocs.io/en/stable/operator-manual/applicationset/Appset-Any-Namespace/#scm-providers-secrets-consideration
-	if len(appsetsSourceNamespaces) > 0 && (len(cr.Spec.ApplicationSet.SCMProviders) <= 0) {
-		cmd = append(cmd, "--enable-scm-providers=false")
 	}
 
 	// ApplicationSet command arguments provided by the user
@@ -421,7 +431,7 @@ func (r *ReconcileArgoCD) applicationSetContainer(cr *argoproj.ArgoCD, addSCMGit
 		Command:         r.getArgoApplicationSetCommand(cr),
 		Env:             appSetEnv,
 		Image:           getApplicationSetContainerImage(cr),
-		ImagePullPolicy: corev1.PullAlways,
+		ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 		Name:            "argocd-applicationset-controller",
 		Resources:       getApplicationSetResources(cr),
 		VolumeMounts:    serverVolumeMounts,
@@ -484,7 +494,7 @@ func (r *ReconcileArgoCD) reconcileApplicationSetServiceAccount(cr *argoproj.Arg
 // reconcileApplicationSetClusterRoleBinding reconciles required clusterrole for appset controller when ArgoCD is cluster-scoped
 func (r *ReconcileArgoCD) reconcileApplicationSetClusterRole(cr *argoproj.ArgoCD) (*v1.ClusterRole, error) {
 
-	allowed := allowedNamespace(cr.Namespace, os.Getenv("ARGOCD_CLUSTER_CONFIG_NAMESPACES"))
+	allowed := argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace)
 
 	// controller disabled, don't create resources
 	if cr.Spec.ApplicationSet == nil || !cr.Spec.ApplicationSet.IsEnabled() {
@@ -498,9 +508,50 @@ func (r *ReconcileArgoCD) reconcileApplicationSetClusterRole(cr *argoproj.ArgoCD
 			Resources: []string{
 				"applications",
 				"applicationsets",
+				"applicationsets/finalizers",
 			},
 			Verbs: []string{
+				"create",
+				"delete",
+				"get",
 				"list",
+				"patch",
+				"update",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{"argoproj.io"},
+			Resources: []string{
+				"appprojects",
+			},
+			Verbs: []string{
+				"get",
+				"list",
+				"watch",
+			},
+		},
+		{
+			APIGroups: []string{"argoproj.io"},
+			Resources: []string{
+				"applicationsets/status",
+			},
+			Verbs: []string{
+				"get",
+				"patch",
+				"update",
+			},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{
+				"events",
+			},
+			Verbs: []string{
+				"create",
+				"get",
+				"list",
+				"patch",
 				"watch",
 			},
 		},
@@ -509,10 +560,35 @@ func (r *ReconcileArgoCD) reconcileApplicationSetClusterRole(cr *argoproj.ArgoCD
 			APIGroups: []string{""},
 			Resources: []string{
 				"secrets",
+				"configmaps",
 			},
 			Verbs: []string{
+				"get",
 				"list",
 				"watch",
+			},
+		},
+		{
+			APIGroups: []string{"coordination.k8s.io"},
+			Resources: []string{
+				"leases",
+			},
+			Verbs: []string{
+				"create",
+			},
+		},
+		{
+			APIGroups: []string{"coordination.k8s.io"},
+			Resources: []string{
+				"leases",
+			},
+			Verbs: []string{
+				"get",
+				"update",
+				"create",
+			},
+			ResourceNames: []string{
+				"58ac56fa.applicationsets.argoproj.io",
 			},
 		},
 	}
@@ -562,7 +638,7 @@ func (r *ReconcileArgoCD) reconcileApplicationSetClusterRole(cr *argoproj.ArgoCD
 // reconcileApplicationSetClusterRoleBinding reconciles required clusterrolebinding for appset controller when ArgoCD is cluster-scoped
 func (r *ReconcileArgoCD) reconcileApplicationSetClusterRoleBinding(cr *argoproj.ArgoCD, role *v1.ClusterRole, sa *corev1.ServiceAccount) error {
 
-	allowed := allowedNamespace(cr.Namespace, os.Getenv("ARGOCD_CLUSTER_CONFIG_NAMESPACES"))
+	allowed := argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace)
 
 	// controller disabled, don't create resources
 	if cr.Spec.ApplicationSet == nil || !cr.Spec.ApplicationSet.IsEnabled() {
@@ -639,17 +715,33 @@ func (r *ReconcileArgoCD) reconcileApplicationSetSourceNamespacesResources(cr *a
 		return nil
 	}
 
-	// create resources for each appset source namespace
-	for _, sourceNamespace := range cr.Spec.ApplicationSet.SourceNamespaces {
+	// Only allow applicationsets in any namespace for cluster-scoped clusters
+	if !argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace) {
 
-		// source ns should be part of app-in-any-ns
-		appsNamespaces, err := r.getSourceNamespaces(cr)
-		if err != nil {
-			reconciliationErrors = append(reconciliationErrors, err)
-			continue
+		if len(cr.Spec.ApplicationSet.SourceNamespaces) > 0 {
+			log.Error(nil, ".spec.applicationSet.sourceNamespaces should not be specified for namespace-scoped Argo CD instances. If you wish to use applicationset sourceNamespaces feature, convert the Argo CD instance to a cluster-scoped instance.")
 		}
+
+		return nil
+	}
+
+	// create resources for each appset source namespace
+	appsetsSourceNamespacesExpanded, err := r.getApplicationSetSourceNamespaces(cr)
+	if err != nil {
+		return fmt.Errorf("failed getting ApplicationSet source namespaces: %w", err)
+	}
+
+	// source ns should be part of app-in-any-ns
+	appsNamespaces, err := r.getSourceNamespaces(cr)
+	if err != nil {
+		return fmt.Errorf("failed to get apps source namespaces: %w", err)
+	}
+
+	// create resources for each appset source namespace (after wildcard expansion)
+	for _, sourceNamespace := range appsetsSourceNamespacesExpanded {
+		// Only process namespaces that are also in apps source namespaces
 		if !contains(appsNamespaces, sourceNamespace) {
-			log.Error(fmt.Errorf("skipping reconciliation of resources for sourceNamespace %s as Apps in target sourceNamespace is not enabled", sourceNamespace), "Warning")
+			log.Info(fmt.Sprintf("skipping reconciliation of resources for sourceNamespace %s as Apps in target sourceNamespace is not enabled", sourceNamespace))
 			continue
 		}
 
@@ -929,28 +1021,72 @@ func getResourceNameForApplicationSetSourceNamespaces(cr *argoproj.ArgoCD) strin
 // ManagedApplicationSetSourceNamespaces var keeps track of namespaces with appset resources.
 func (r *ReconcileArgoCD) removeUnmanagedApplicationSetSourceNamespaceResources(cr *argoproj.ArgoCD) error {
 
-	for ns := range r.ManagedApplicationSetSourceNamespaces {
-		managedNamespace := false
-		if cr.Spec.ApplicationSet != nil && cr.GetDeletionTimestamp() == nil {
-			appsNamespaces, err := r.getSourceNamespaces(cr)
-			if err != nil {
-				return err
+	// For each namespace the ArgoCDApplicationSetManagedByClusterArgoCDLabel label.
+	for appsetsInAnyNamespaceLabelledNS := range r.ManagedApplicationSetSourceNamespaces {
+
+		// Retrieve the namespace object in the 'managed application source namespaces' list
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: appsetsInAnyNamespaceLabelledNS},
+		}
+		if err := r.Get(context.Background(), client.ObjectKeyFromObject(ns), ns); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue // skip if not found
+			} else {
+				return fmt.Errorf("unable to get ns: %v", err)
 			}
-			for _, namespace := range cr.Spec.ApplicationSet.SourceNamespaces {
-				// appset ns should be part of apps ns
-				if namespace == ns && contains(appsNamespaces, namespace) {
-					managedNamespace = true
-					break
+		}
+
+		// We want to determine the Argo CD namespace that manages ns. We use labels to determine that.
+		var argocdNamespaceThatManagesNamespace string
+
+		// First try to label applicationset managed by label value
+		if val, ok := ns.Labels[common.ArgoCDApplicationSetManagedByClusterArgoCDLabel]; ok {
+			argocdNamespaceThatManagesNamespace = val
+
+		} else if val, ok := ns.Labels[common.ArgoCDManagedByLabel]; ok {
+			// Next try to generic managed by label
+			argocdNamespaceThatManagesNamespace = val
+		} else {
+			// Give up and continue
+			log.Info("could not locate owner for " + appsetsInAnyNamespaceLabelledNS)
+			continue
+		}
+
+		// For the following logic, the CR must be the one that owns the namespace
+		if argocdNamespaceThatManagesNamespace != cr.Namespace || argocdNamespaceThatManagesNamespace == "" {
+			continue
+		}
+
+		managedNamespace := false
+
+		// Ensure the feature is enabled only for cluster-scoped ArgoCD instances:
+		// - If the ArgoCD instance is namespace scoped, then ALL resources should be cleaned up
+		if argoutil.IsNamespaceClusterConfigNamespace(cr.Namespace) {
+
+			if cr.Spec.ApplicationSet != nil && cr.GetDeletionTimestamp() == nil {
+
+				// namespace is valid if it matches any pattern in cr.Spec.ApplicationSet.SourceNamespaces AND is in cr.Spec.SourceNamespaces
+				appsNamespaces, err := r.getSourceNamespaces(cr)
+				if err != nil {
+					return err
+				}
+				// Check if the namespace matches any of the ApplicationSet source namespace patterns
+				if glob.MatchStringInList(cr.Spec.ApplicationSet.SourceNamespaces, appsetsInAnyNamespaceLabelledNS, glob.REGEXP) {
+					// appset ns should be part of apps ns
+					if contains(appsNamespaces, appsetsInAnyNamespaceLabelledNS) {
+						managedNamespace = true
+					}
 				}
 			}
 		}
 
+		// If the namespace was previously managed, but no longer is, delete the resources from it and remove the label
 		if !managedNamespace {
-			if err := r.cleanupUnmanagedApplicationSetSourceNamespaceResources(cr, ns); err != nil {
-				log.Error(err, fmt.Sprintf("error cleaning up applicationset resources for namespace %s", ns))
+			if err := r.cleanupUnmanagedApplicationSetSourceNamespaceResources(cr, appsetsInAnyNamespaceLabelledNS); err != nil {
+				log.Error(err, fmt.Sprintf("error cleaning up applicationset resources for namespace %s", appsetsInAnyNamespaceLabelledNS))
 				continue
 			}
-			delete(r.ManagedApplicationSetSourceNamespaces, ns)
+			delete(r.ManagedApplicationSetSourceNamespaces, appsetsInAnyNamespaceLabelledNS)
 		}
 	}
 	return nil
@@ -1112,10 +1248,28 @@ func (r *ReconcileArgoCD) reconcileSourceNamespaceRoleBinding(roleBinding v1.Rol
 	return nil
 }
 
-// getApplicationSetSourceNamespaces return list of namespaces from .spec.ApplicationSet.SourceNamespaces
-func (r *ReconcileArgoCD) getApplicationSetSourceNamespaces(cr *argoproj.ArgoCD) []string {
-	if cr.Spec.ApplicationSet != nil {
-		return cr.Spec.ApplicationSet.SourceNamespaces
+// getApplicationSetSourceNamespaces returns the list of actual namespaces that match the patterns
+// specified in .spec.ApplicationSet.SourceNamespaces. It supports wildcard patterns (e.g., team-*).
+func (r *ReconcileArgoCD) getApplicationSetSourceNamespaces(cr *argoproj.ArgoCD) ([]string, error) {
+	if cr.Spec.ApplicationSet == nil {
+		return []string(nil), nil
 	}
-	return []string(nil)
+
+	sourceNamespaces := []string{}
+	namespaces := &corev1.NamespaceList{}
+
+	if err := r.List(context.TODO(), namespaces, &client.ListOptions{}); err != nil {
+		return nil, err
+	}
+
+	// Intentional: use REGEXP so .spec.applicationSet.sourceNamespaces can contain either
+	// glob-like wildcards or full regular expressions. We expand to concrete namespaces here,
+	// and pass the final list to the controller via --applicationset-namespaces.
+	for _, namespace := range namespaces.Items {
+		if glob.MatchStringInList(cr.Spec.ApplicationSet.SourceNamespaces, namespace.Name, glob.REGEXP) {
+			sourceNamespaces = append(sourceNamespaces, namespace.Name)
+		}
+	}
+	sort.Strings(sourceNamespaces)
+	return sourceNamespaces, nil
 }

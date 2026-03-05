@@ -140,6 +140,9 @@ const (
 	// ArgoCDKeyStatusBadgeEnabled is the configuration key for enabling the status badge.
 	ArgoCDKeyStatusBadgeEnabled = "statusbadge.enabled"
 
+	// ArgoCDKeyTimeout is the configuration key for the reconciliation timeout in argocd-cm.
+	ArgoCDKeyTimeout = "timeout.reconciliation"
+
 	// ArgoCDKeyBannerContent is the configuration key for a banner message content.
 	ArgoCDKeyBannerContent = "ui.bannercontent"
 
@@ -214,8 +217,14 @@ const (
 	// ArgoCDManagedByClusterArgoCDLabel is needed to identify namespace mentioned as sourceNamespace on ArgoCD
 	ArgoCDManagedByClusterArgoCDLabel = "argocd.argoproj.io/managed-by-cluster-argocd"
 
-	// ArgoCDManagedByClusterArgoCDLabel is needed to identify namespace mentioned as sourceNamespace on ArgoCD
+	// ArgoCDApplicationSetManagedByClusterArgoCDLabel is needed to identify namespace mentioned as applicationSet sourceNamespaces on ArgoCD
 	ArgoCDApplicationSetManagedByClusterArgoCDLabel = "argocd.argoproj.io/applicationset-managed-by-cluster-argocd"
+
+	// ArgoCDNotificationsManagedByClusterArgoCDLabel is needed to identify namespace mentioned as notifications sourceNamespaces on ArgoCD
+	ArgoCDNotificationsManagedByClusterArgoCDLabel = "argocd.argoproj.io/notifications-managed-by-cluster-argocd"
+
+	// ArgoCDCATrustChecksum is applied to repo-server Deployment to trigger reconciliation when some of the SystemCATrust sources changes
+	ArgoCDCATrustChecksum = "argocd.argoproj.io/ca-trust-checksum"
 
 	// ArgoCDControllerClusterRoleEnvName is an environment variable to specify a custom cluster role for Argo CD application controller
 	ArgoCDControllerClusterRoleEnvName = "CONTROLLER_CLUSTER_ROLE"
@@ -238,4 +247,12 @@ const (
 	// ALLOW_NAMESPACE_MANAGEMENT_IN_NAMESPACE_SCOPED_INSTANCES is an environment variable that controls whether
 	// the Namespace Management feature is enabled.
 	EnableManagedNamespace = "ALLOW_NAMESPACE_MANAGEMENT_IN_NAMESPACE_SCOPED_INSTANCES"
+
+	// ArgoCDImageUpdaterImageEnvName is the environment variable used to get the image
+	// to used for the Image Updater container.
+	ArgoCDImageUpdaterImageEnvName = "ARGOCD_IMAGE_UPDATER_IMAGE"
+
+	// ArgoCDImagePullPolicyEnvName is the environment variable used to get the global image pull policy
+	// for all ArgoCD components managed by the operator.
+	ArgoCDImagePullPolicyEnvName = "IMAGE_PULL_POLICY"
 )

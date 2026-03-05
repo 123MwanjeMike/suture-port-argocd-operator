@@ -257,7 +257,7 @@ metadata:
     capabilities: Deep Insights
     categories: Integration & Delivery
     certified: "false"
-    createdAt: "2025-08-28T14:32:44Z"
+    createdAt: "2026-01-19T08:11:49Z"
     description: Argo CD is a declarative, GitOps continuous delivery tool for Kubernetes.
     operators.operatorframework.io/builder: operator-sdk-v1.35.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -603,6 +603,15 @@ spec:
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:fieldGroup:ArgoCD
         - urn:alm:descriptor:com.tectonic.ui:text
+      - description: ImagePullPolicy is the image pull policy for all ArgoCD components.
+          Valid values are Always, IfNotPresent, Never. If not specified, defaults
+          to the operator's global setting.
+        displayName: Image Pull Policy
+        path: imagePullPolicy
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:fieldGroup:ArgoCD
+        - urn:alm:descriptor:com.tectonic.ui:text
+        - urn:alm:descriptor:com.tectonic.ui:fieldDependency:image:enable
       - description: Name of an ArgoCDExport from which to import data.
         displayName: Name
         path: import.name
@@ -1190,6 +1199,15 @@ spec:
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:fieldGroup:ArgoCD
         - urn:alm:descriptor:com.tectonic.ui:text
+      - description: ImagePullPolicy is the image pull policy for all ArgoCD components.
+          Valid values are Always, IfNotPresent, Never. If not specified, defaults
+          to the operator's global setting.
+        displayName: Image Pull Policy
+        path: imagePullPolicy
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:fieldGroup:ArgoCD
+        - urn:alm:descriptor:com.tectonic.ui:text
+        - urn:alm:descriptor:com.tectonic.ui:fieldDependency:image:enable
       - description: Name of an ArgoCDExport from which to import data.
         displayName: Name
         path: import.name
@@ -1565,6 +1583,9 @@ spec:
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       version: v1beta1
+    - kind: ImageUpdater
+      name: imageupdaters.argocd-image-updater.argoproj.io
+      version: v1alpha1
     - description: NamespaceManagement is the Schema for the namespacemanagements
         API
       displayName: Namespace Management
@@ -1768,6 +1789,13 @@ spec:
           verbs:
           - update
         - apiGroups:
+          - argocd-image-updater.argoproj.io
+          resources:
+          - imageupdaters
+          - imageupdaters/finalizers
+          verbs:
+          - '*'
+        - apiGroups:
           - argoproj.io
           resources:
           - applications
@@ -1909,7 +1937,7 @@ spec:
                       fieldPath: metadata.annotations['olm.targetNamespaces']
                 - name: ENABLE_CONVERSION_WEBHOOK
                   value: "true"
-                image: quay.io/argoprojlabs/argocd-operator:v0.17.0
+                image: quay.io/argoprojlabs/argocd-operator@sha256:6a4d487c6d38a6ca5b2d95bbba0886cafdc222d9f55729d618681d84162f5385
                 livenessProbe:
                   httpGet:
                     path: /healthz

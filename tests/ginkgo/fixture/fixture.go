@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	//lint:ignore ST1001 "This is a common practice in Gomega tests for readability."
-	. "github.com/onsi/ginkgo/v2" //nolint:all
-	//lint:ignore ST1001 "This is a common practice in Gomega tests for readability."
-	. "github.com/onsi/gomega" //nolint:all
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	securityv1 "github.com/openshift/api/security/v1"
 
 	crdv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -42,6 +41,67 @@ const (
 
 var NamespaceLabels = map[string]string{E2ETestLabelsKey: E2ETestLabelsValue}
 
+// waitForRootPartitionToHaveMinimumDiskSpace:
+// - When running via GitHub (GH) action, the E2E test environment has only ~14GiB of disk space available.
+// - As the E2E tests run, and as the K8s cluster persists data, that available storage drops over time.
+// - This drop is especially significant during parallel test execution, as multiple Argo CD instances are running/logging at the same time.
+// - When the available disk space drops to 4GiB, the K8s instance will start to arbitrarily evict pods, which causes tests to intermittently fail.
+// - As a workaround (since we can't increase the GH action env), each parallel test will wait for a minimum of disk space before starting.
+// - Before each parallel test, we thus run `df` command and wait for it to tell use that >= 7 GiB of disk space is available.
+func WaitForRootPartitionToHaveMinimumDiskSpace() {
+
+	startTime := time.Now()
+
+	for {
+
+		output, err := osFixture.ExecCommandWithOutputParam(false, false, "df", "-k")
+		Expect(err).ToNot(HaveOccurred())
+
+		// Output from 'df' looks like this:
+		// Filesystem     1K-blocks     Used Available Use% Mounted on
+		// /dev/root       75085112 68827120   6241608  92% /
+		// (...)
+
+		// Extract only '/dev/root' line
+		var rootEntry string
+		for line := range strings.SplitSeq(output, "\n") {
+			if strings.Contains(line, "/dev/root") {
+				rootEntry = line
+				break
+			}
+		}
+		if rootEntry == "" {
+			// No '/dev/root' volume to manage, so no work to do.
+			return
+		}
+
+		// Split output by whitespace to parse df fields
+		fields := strings.Fields(rootEntry)
+		Expect(len(fields)).To(BeNumerically(">=", 4), "df output should have at least 4 fields")
+
+		// Parse fields[3] which is the available space in 1KB blocks (df outputs sizes in 1KB blocks, not bytes)
+		availableKiB, err := strconv.ParseInt(fields[3], 10, 64)
+		Expect(err).ToNot(HaveOccurred(), "failed to parse available 1KiB blocks from df output")
+
+		// Convert 1KiB blocks to GiB (1 GiB = 1024^2 1KiB blocks)
+		availableGB := (float64)(availableKiB) / (1024 * 1024)
+
+		// If less than 7 GiB available, sleep and continue the loop
+		if availableGB < 7 {
+			// Check if we've exceeded the 10 minute timeout
+			if time.Since(startTime) > 10*time.Minute {
+				Fail(fmt.Sprintf("Timeout waiting for /dev/root volume to have minimum disk space. Waited for %v, current available space: %.2f GiB", time.Since(startTime), availableGB))
+			}
+
+			GinkgoWriter.Println("Waiting for /dev/root volume to have minimum size, current size:", availableGB, "GiB")
+			time.Sleep(time.Second * 10)
+		} else {
+			// >= 7GiB, so we're good to run the test.
+			return
+		}
+	}
+}
+
 func EnsureParallelCleanSlate() {
 
 	// Increase the maximum length of debug output, for when tests fail
@@ -50,6 +110,8 @@ func EnsureParallelCleanSlate() {
 	SetDefaultEventuallyPollingInterval(time.Second * 3)
 	SetDefaultConsistentlyDuration(time.Second * 10)
 	SetDefaultConsistentlyPollingInterval(time.Second * 1)
+
+	WaitForRootPartitionToHaveMinimumDiskSpace()
 
 	// Unlike sequential clean slate, parallel clean slate cannot assume that there are no other tests running. This limits our ability to clean up old test artifacts.
 }
@@ -64,6 +126,8 @@ func EnsureSequentialCleanSlate() {
 }
 
 func EnsureSequentialCleanSlateWithError() error {
+
+	WaitForRootPartitionToHaveMinimumDiskSpace()
 
 	// With sequential tests, we are always safe to assume that there is no other test running. That allows us to clean up old test artifacts before new test starts.
 
@@ -182,6 +246,37 @@ func CreateManagedNamespaceWithCleanupFunc(name string, managedByNamespace strin
 	return ns, nsDeletionFunc(ns)
 }
 
+// Create a namespace 'name' that is managed by a cluster-scoped ArgoCD instance, via managed-by-cluster-argocd label.
+func CreateClusterScopedManagedNamespace(name string, managedByArgoCDInstance string) *corev1.Namespace {
+	k8sClient, _ := utils.GetE2ETestKubeClient()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+
+	// If the Namespace already exists, delete it first
+	if err := k8sClient.Get(context.Background(), client.ObjectKeyFromObject(ns), ns); err == nil {
+		// Namespace exists, so delete it first
+		Expect(deleteNamespaceAndVerify(context.Background(), ns.Name, k8sClient)).To(Succeed())
+	}
+
+	ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: name,
+		Labels: map[string]string{
+			E2ETestLabelsKey: E2ETestLabelsValue,
+			"argocd.argoproj.io/managed-by-cluster-argocd": managedByArgoCDInstance,
+		},
+	}}
+
+	Expect(k8sClient.Create(context.Background(), ns)).To(Succeed())
+
+	return ns
+
+}
+
+func CreateClusterScopedManagedNamespaceWithCleanupFunc(name string, managedByArgoCDInstance string) (*corev1.Namespace, func()) {
+	ns := CreateClusterScopedManagedNamespace(name, managedByArgoCDInstance)
+	return ns, nsDeletionFunc(ns)
+}
+
 // nsDeletionFunc is a convenience function that returns a function that deletes a namespace. This is used for Namespace cleanup by other functions.
 func nsDeletionFunc(ns *corev1.Namespace) func() {
 
@@ -221,6 +316,53 @@ func EnvLocalRun() bool {
 func EnvCI() bool {
 	_, exists := os.LookupEnv("CI")
 	return exists
+}
+
+// waitForAllEnvVarsToBeRemovedFromDeployments checks all Deployments in the Namespace, to ensure that none of those Deployments contain environment variables defined within envVarKeys.
+// This can be used before a test starts to ensure that Operator or Argo CD containers are back to default state.
+//
+//nolint:unused
+func waitForAllEnvVarsToBeRemovedFromDeployments(ns string, envVarKeys []string, k8sClient client.Client) {
+
+	Eventually(func() bool {
+		var deplList appsv1.DeploymentList
+
+		if err := k8sClient.List(context.Background(), &deplList, client.InNamespace(ns)); err != nil {
+			GinkgoWriter.Println(err)
+			return false
+		}
+
+		// For each Deployment in the list...
+		for _, depl := range deplList.Items {
+
+			// If at least one of the Deployments has not been observed, wait and try again
+			if depl.Generation != depl.Status.ObservedGeneration {
+				return false
+			}
+
+			// For each container of the deployment
+			for _, container := range depl.Spec.Template.Spec.Containers {
+
+				// For each env var we are looking for
+				for _, envVarKey := range envVarKeys {
+
+					for _, containerEnvKey := range container.Env {
+
+						if containerEnvKey.Name == envVarKey {
+							GinkgoWriter.Println("Waiting:", containerEnvKey, "is still present in Deployment ", depl.Name)
+							return false
+						}
+
+					}
+				}
+			}
+		}
+
+		// All Deployments in NS are reconciled and ready
+		return true
+
+	}, "3m", "1s").Should(BeTrue())
+
 }
 
 func WaitForAllDeploymentsInTheNamespaceToBeReady(ns string, k8sClient client.Client) {
@@ -469,7 +611,7 @@ func OutputDebugOnFail(namespaceParams ...any) {
 
 	for _, namespace := range namespaces {
 
-		kubectlOutput, err := osFixture.ExecCommandWithOutputParam(false, "kubectl", "get", "all", "-n", namespace)
+		kubectlOutput, err := osFixture.ExecCommandWithOutputParam(false, true, "kubectl", "get", "all", "-n", namespace)
 		if err != nil {
 			GinkgoWriter.Println("unable to list", namespace, err, kubectlOutput)
 			continue
@@ -481,7 +623,7 @@ func OutputDebugOnFail(namespaceParams ...any) {
 		GinkgoWriter.Println(kubectlOutput)
 		GinkgoWriter.Println("----------------------------------------------------------------")
 
-		kubectlOutput, err = osFixture.ExecCommandWithOutputParam(false, "kubectl", "get", "deployments", "-n", namespace, "-o", "yaml")
+		kubectlOutput, err = osFixture.ExecCommandWithOutputParam(false, true, "kubectl", "get", "deployments", "-n", namespace, "-o", "yaml")
 		if err != nil {
 			GinkgoWriter.Println("unable to list", namespace, err, kubectlOutput)
 			continue
@@ -493,7 +635,7 @@ func OutputDebugOnFail(namespaceParams ...any) {
 		GinkgoWriter.Println(kubectlOutput)
 		GinkgoWriter.Println("----------------------------------------------------------------")
 
-		kubectlOutput, err = osFixture.ExecCommandWithOutputParam(false, "kubectl", "get", "events", "-n", namespace)
+		kubectlOutput, err = osFixture.ExecCommandWithOutputParam(false, true, "kubectl", "get", "events", "-n", namespace)
 		if err != nil {
 			GinkgoWriter.Println("unable to get events for namespace", err, kubectlOutput)
 		} else {
@@ -506,7 +648,7 @@ func OutputDebugOnFail(namespaceParams ...any) {
 
 	}
 
-	kubectlOutput, err := osFixture.ExecCommandWithOutputParam(false, "kubectl", "get", "argocds", "-A", "-o", "yaml")
+	kubectlOutput, err := osFixture.ExecCommandWithOutputParam(false, true, "kubectl", "get", "argocds", "-A", "-o", "yaml")
 	if err != nil {
 		GinkgoWriter.Println("unable to output all argo cd statuses", err, kubectlOutput)
 	} else {
@@ -587,7 +729,7 @@ func outputPodLog(podSubstring string) {
 	}
 
 	// Extract operator logs
-	kubectlLogOutput, err := osFixture.ExecCommandWithOutputParam(false, "kubectl", "logs", "pod/"+matchingPods[0].Name, "manager", "-n", matchingPods[0].Namespace)
+	kubectlLogOutput, err := osFixture.ExecCommandWithOutputParam(false, true, "kubectl", "logs", "pod/"+matchingPods[0].Name, "manager", "-n", matchingPods[0].Namespace)
 	if err != nil {
 		GinkgoWriter.Println("unable to extract operator logs", err)
 		return

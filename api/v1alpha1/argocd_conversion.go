@@ -101,6 +101,7 @@ func (src *ArgoCD) ConvertTo(dstRaw conversion.Hub) error {
 	dst.Spec.AggregatedClusterRoles = src.Spec.AggregatedClusterRoles
 	dst.Spec.ArgoCDAgent = ConvertAlphaToBetaArgoCDAgent(src.Spec.ArgoCDAgent)
 	dst.Spec.NamespaceManagement = ConvertAlphaToBetaNamespaceManagement(src.Spec.NamespaceManagement)
+	dst.Spec.NetworkPolicy = v1beta1.ArgoCDNetworkPolicySpec(src.Spec.NetworkPolicy)
 
 	// Status conversion
 	dst.Status = v1beta1.ArgoCDStatus(src.Status)
@@ -717,6 +718,7 @@ func ConvertAlphaToBetaArgoCDAgent(src *ArgoCDAgentSpec) *v1beta1.ArgoCDAgentSpe
 	if src != nil {
 		dst = &v1beta1.ArgoCDAgentSpec{
 			Principal: ConvertAlphaToBetaPrincipal(src.Principal),
+			Agent:     ConvertAlphaToBetaAgent(src.Agent),
 		}
 	}
 	return dst
@@ -738,6 +740,11 @@ func ConvertAlphaToBetaPrincipal(src *PrincipalSpec) *v1beta1.PrincipalSpec {
 	if src != nil {
 		dst = &v1beta1.PrincipalSpec{
 			Enabled:       src.Enabled,
+			Auth:          src.Auth,
+			LogLevel:      src.LogLevel,
+			LogFormat:     src.LogFormat,
+			Image:         src.Image,
+			Env:           src.Env,
 			Server:        ConvertAlphaToBetaPrincipalServer(src.Server),
 			Redis:         ConvertAlphaToBetaPrincipalRedis(src.Redis),
 			Namespace:     ConvertAlphaToBetaPrincipalNamespace(src.Namespace),
@@ -754,6 +761,7 @@ func ConvertBetaToAlphaArgoCDAgent(src *v1beta1.ArgoCDAgentSpec) *ArgoCDAgentSpe
 	if src != nil {
 		dst = &ArgoCDAgentSpec{
 			Principal: ConvertBetaToAlphaPrincipal(src.Principal),
+			Agent:     ConvertBetaToAlphaAgent(src.Agent),
 		}
 	}
 	return dst
@@ -764,6 +772,11 @@ func ConvertBetaToAlphaPrincipal(src *v1beta1.PrincipalSpec) *PrincipalSpec {
 	if src != nil {
 		dst = &PrincipalSpec{
 			Enabled:       src.Enabled,
+			Auth:          src.Auth,
+			LogLevel:      src.LogLevel,
+			LogFormat:     src.LogFormat,
+			Image:         src.Image,
+			Env:           src.Env,
 			Server:        ConvertBetaToAlphaPrincipalServer(src.Server),
 			Redis:         ConvertBetaToAlphaPrincipalRedis(src.Redis),
 			Namespace:     ConvertBetaToAlphaPrincipalNamespace(src.Namespace),
@@ -779,13 +792,10 @@ func ConvertAlphaToBetaPrincipalServer(src *PrincipalServerSpec) *v1beta1.Princi
 	var dst *v1beta1.PrincipalServerSpec
 	if src != nil {
 		dst = &v1beta1.PrincipalServerSpec{
-			Auth:                 src.Auth,
 			EnableWebSocket:      src.EnableWebSocket,
-			LogLevel:             src.LogLevel,
-			LogFormat:            src.LogFormat,
 			KeepAliveMinInterval: src.KeepAliveMinInterval,
-			Image:                src.Image,
-			Env:                  src.Env,
+			Service:              v1beta1.ArgoCDAgentPrincipalServiceSpec(src.Service),
+			Route:                v1beta1.ArgoCDAgentPrincipalRouteSpec(src.Route),
 		}
 	}
 	return dst
@@ -795,13 +805,10 @@ func ConvertBetaToAlphaPrincipalServer(src *v1beta1.PrincipalServerSpec) *Princi
 	var dst *PrincipalServerSpec
 	if src != nil {
 		dst = &PrincipalServerSpec{
-			Auth:                 src.Auth,
 			EnableWebSocket:      src.EnableWebSocket,
-			LogLevel:             src.LogLevel,
-			LogFormat:            src.LogFormat,
 			KeepAliveMinInterval: src.KeepAliveMinInterval,
-			Image:                src.Image,
-			Env:                  src.Env,
+			Service:              ArgoCDAgentPrincipalServiceSpec(src.Service),
+			Route:                ArgoCDAgentPrincipalRouteSpec(src.Route),
 		}
 	}
 	return dst
@@ -918,6 +925,116 @@ func ConvertBetaToAlphaPrincipalJWT(src *v1beta1.PrincipalJWTSpec) *PrincipalJWT
 		dst = &PrincipalJWTSpec{
 			SecretName:       src.SecretName,
 			InsecureGenerate: src.InsecureGenerate,
+		}
+	}
+	return dst
+}
+
+func ConvertAlphaToBetaAgent(src *AgentSpec) *v1beta1.AgentSpec {
+	var dst *v1beta1.AgentSpec
+	if src != nil {
+		dst = &v1beta1.AgentSpec{
+			Enabled:   src.Enabled,
+			Creds:     src.Creds,
+			LogLevel:  src.LogLevel,
+			LogFormat: src.LogFormat,
+			Image:     src.Image,
+			Env:       src.Env,
+			Client:    ConvertAlphaToBetaAgentClient(src.Client),
+			Redis:     ConvertAlphaToBetaAgentRedis(src.Redis),
+			TLS:       ConvertAlphaToBetaAgentTLS(src.TLS),
+		}
+	}
+	return dst
+}
+
+func ConvertBetaToAlphaAgent(src *v1beta1.AgentSpec) *AgentSpec {
+	var dst *AgentSpec
+	if src != nil {
+		dst = &AgentSpec{
+			Enabled:   src.Enabled,
+			Creds:     src.Creds,
+			LogLevel:  src.LogLevel,
+			LogFormat: src.LogFormat,
+			Image:     src.Image,
+			Env:       src.Env,
+			Client:    ConvertBetaToAlphaAgentClient(src.Client),
+			Redis:     ConvertBetaToAlphaAgentRedis(src.Redis),
+			TLS:       ConvertBetaToAlphaAgentTLS(src.TLS),
+		}
+	}
+	return dst
+}
+
+func ConvertAlphaToBetaAgentClient(src *AgentClientSpec) *v1beta1.AgentClientSpec {
+	var dst *v1beta1.AgentClientSpec
+	if src != nil {
+		dst = &v1beta1.AgentClientSpec{
+			PrincipalServerAddress: src.PrincipalServerAddress,
+			PrincipalServerPort:    src.PrincipalServerPort,
+			Mode:                   src.Mode,
+			EnableWebSocket:        src.EnableWebSocket,
+			EnableCompression:      src.EnableCompression,
+			KeepAliveInterval:      src.KeepAliveInterval,
+		}
+	}
+	return dst
+}
+
+func ConvertBetaToAlphaAgentClient(src *v1beta1.AgentClientSpec) *AgentClientSpec {
+	var dst *AgentClientSpec
+	if src != nil {
+		dst = &AgentClientSpec{
+			PrincipalServerAddress: src.PrincipalServerAddress,
+			PrincipalServerPort:    src.PrincipalServerPort,
+			Mode:                   src.Mode,
+			EnableWebSocket:        src.EnableWebSocket,
+			EnableCompression:      src.EnableCompression,
+			KeepAliveInterval:      src.KeepAliveInterval,
+		}
+	}
+	return dst
+}
+
+func ConvertAlphaToBetaAgentRedis(src *AgentRedisSpec) *v1beta1.AgentRedisSpec {
+	var dst *v1beta1.AgentRedisSpec
+	if src != nil {
+		dst = &v1beta1.AgentRedisSpec{
+			ServerAddress: src.ServerAddress,
+		}
+	}
+	return dst
+}
+
+func ConvertBetaToAlphaAgentRedis(src *v1beta1.AgentRedisSpec) *AgentRedisSpec {
+	var dst *AgentRedisSpec
+	if src != nil {
+		dst = &AgentRedisSpec{
+			ServerAddress: src.ServerAddress,
+		}
+	}
+	return dst
+}
+
+func ConvertAlphaToBetaAgentTLS(src *AgentTLSSpec) *v1beta1.AgentTLSSpec {
+	var dst *v1beta1.AgentTLSSpec
+	if src != nil {
+		dst = &v1beta1.AgentTLSSpec{
+			SecretName:       src.SecretName,
+			RootCASecretName: src.RootCASecretName,
+			Insecure:         src.Insecure,
+		}
+	}
+	return dst
+}
+
+func ConvertBetaToAlphaAgentTLS(src *v1beta1.AgentTLSSpec) *AgentTLSSpec {
+	var dst *AgentTLSSpec
+	if src != nil {
+		dst = &AgentTLSSpec{
+			SecretName:       src.SecretName,
+			RootCASecretName: src.RootCASecretName,
+			Insecure:         src.Insecure,
 		}
 	}
 	return dst

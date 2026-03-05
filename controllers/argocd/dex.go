@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
 	"time"
+
+	configv1 "github.com/openshift/api/config/v1"
 
 	"gopkg.in/yaml.v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	argoproj "github.com/argoproj-labs/argocd-operator/api/v1beta1"
@@ -144,8 +149,24 @@ func (r *ReconcileArgoCD) reconcileDexConfiguration(cm *corev1.ConfigMap, cr *ar
 	return nil
 }
 
+func IsExternalAuthenticationEnabledOnCluster(ctx context.Context, c client.Client) bool {
+	var authConfig configv1.Authentication
+	if err := c.Get(ctx, types.NamespacedName{Name: "cluster"}, &authConfig); err != nil {
+		log.Error(err, "unable to fetch cluster authentication configuration")
+		return false
+	}
+	return authConfig.Spec.Type == "OIDC"
+}
+
 // getOpenShiftDexConfig will return the configuration for the Dex server running on OpenShift.
 func (r *ReconcileArgoCD) getOpenShiftDexConfig(cr *argoproj.ArgoCD) (string, error) {
+	if IsOpenShiftCluster() && IsExternalAuthenticationEnabledOnCluster(context.TODO(), r.Client) {
+		if updateStatusErr := updateStatusAndConditionsOfArgoCD(context.TODO(), createCondition(argoproj.OpenShiftOAuthErrorMessage), cr, &cr.Status, r.Client, log); updateStatusErr != nil {
+			log.Error(updateStatusErr, "unable to update status of ArgoCD")
+			return "", updateStatusErr
+		}
+		return "", nil
+	}
 	groups := []string{}
 
 	// Allow override of groups from CR
@@ -295,9 +316,10 @@ func (r *ReconcileArgoCD) reconcileDexDeployment(cr *argoproj.ArgoCD) error {
 			"/shared/argocd-dex",
 			"rundex",
 		},
-		Image: getDexContainerImage(cr),
-		Name:  "dex",
-		Env:   dexEnv,
+		Image:           getDexContainerImage(cr),
+		ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
+		Name:            "dex",
+		Env:             dexEnv,
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -334,7 +356,7 @@ func (r *ReconcileArgoCD) reconcileDexDeployment(cr *argoproj.ArgoCD) error {
 		},
 		Env:             proxyEnvVars(),
 		Image:           getArgoContainerImage(cr),
-		ImagePullPolicy: corev1.PullAlways,
+		ImagePullPolicy: argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy),
 		Name:            "copyutil",
 		Resources:       getDexResources(cr),
 		SecurityContext: argoutil.DefaultSecurityContext(),
@@ -361,15 +383,27 @@ func (r *ReconcileArgoCD) reconcileDexDeployment(cr *argoproj.ArgoCD) error {
 
 		actualImage := existing.Spec.Template.Spec.Containers[0].Image
 		desiredImage := getDexContainerImage(cr)
+		actualImagePullPolicy := existing.Spec.Template.Spec.Containers[0].ImagePullPolicy
+		desiredImagePullPolicy := argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy)
 		if actualImage != desiredImage {
 			existing.Spec.Template.Spec.Containers[0].Image = desiredImage
 			existing.Spec.Template.Labels["image.upgraded"] = time.Now().UTC().Format("01022006-150406-MST")
 			explanation = "container image"
 			changed = true
 		}
+		if actualImagePullPolicy != desiredImagePullPolicy {
+			existing.Spec.Template.Spec.Containers[0].ImagePullPolicy = desiredImagePullPolicy
+			if changed {
+				explanation += ", "
+			}
+			explanation += "image pull policy"
+			changed = true
+		}
 
 		actualImage = existing.Spec.Template.Spec.InitContainers[0].Image
 		desiredImage = getArgoContainerImage(cr)
+		actualInitImagePullPolicy := existing.Spec.Template.Spec.InitContainers[0].ImagePullPolicy
+		desiredInitImagePullPolicy := argoutil.GetImagePullPolicy(cr.Spec.ImagePullPolicy)
 		if actualImage != desiredImage {
 			existing.Spec.Template.Spec.InitContainers[0].Image = desiredImage
 			existing.Spec.Template.Labels["image.upgraded"] = time.Now().UTC().Format("01022006-150406-MST")
@@ -377,6 +411,14 @@ func (r *ReconcileArgoCD) reconcileDexDeployment(cr *argoproj.ArgoCD) error {
 				explanation += ", "
 			}
 			explanation += "init container image"
+			changed = true
+		}
+		if actualInitImagePullPolicy != desiredInitImagePullPolicy {
+			existing.Spec.Template.Spec.InitContainers[0].ImagePullPolicy = desiredInitImagePullPolicy
+			if changed {
+				explanation += ", "
+			}
+			explanation += "init container image pull policy"
 			changed = true
 		}
 		updateNodePlacement(existing, deploy, &changed, &explanation)

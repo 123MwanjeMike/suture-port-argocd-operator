@@ -60,6 +60,13 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - argocd-image-updater.argoproj.io
+  resources:
+  - imageupdaters
+  - imageupdaters/finalizers
+  verbs:
+  - '*'
+- apiGroups:
   - argoproj.io
   resources:
   - applications
@@ -91,8 +98,17 @@ rules:
   verbs:
   - '*'
 - apiGroups:
+  - certificates.k8s.io
+  resources:
+  - clustertrustbundles
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - config.openshift.io
   resources:
+  - authentications
   - clusterversions
   verbs:
   - get
